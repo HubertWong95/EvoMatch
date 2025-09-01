@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import Navbar from "@/components/Navbar";
-import MatchConfirm from "../components/MatchConfirm";
+import MatchConfirm from "@/components/MatchConfirm";
 import { mockProfiles, UserProfile } from "@/mock/mockProfiles";
 import bg from "@/assets/discoverBckgrd.png";
 import HobbyBadge from "@/components/HobbyBadge";
-import TriviaBox from "@/components/TriviaBox_with_api";
+import TriviaBox, {
+  type TriviaQuestion,
+} from "@/components/TriviaBox_with_api";
 import { generateTriviaQuestion } from "@/utils/generateTrivia";
-import { TriviaQuestion } from "@/mock/triviaQuestions";
 import { isAnswerSimilar } from "@/utils/isAnswerSimilar";
 import { mockOpponentAnswers } from "@/mock/mockOpponentAnswers";
 import { getCurrentUser, updateUser } from "@/lib/userService";
