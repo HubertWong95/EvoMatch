@@ -43,7 +43,7 @@ const PixelButton = ({
         "font-pixel border-2 border-b-4 border-r-4 border-game-black",
         "hover:translate-y-[2px] hover:border-b-2 hover:border-r-2",
         "active:translate-y-[4px] active:border-b-0 active:border-r-0",
-        "transition-all duration-100 focus:outline-none border-2 m-border-black shadow-[3px_3px_0px_0px_black]",
+        "transition-all duration-100 focus:outline-none m-border-black shadow-[3px_3px_0px_0px_black]",
         variantClasses[variant],
         sizeClasses[size],
         isActive && "translate-y-[2px] border-b-2 border-r-2",
