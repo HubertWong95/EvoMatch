@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import MessageBox, { Message, ChatPartner } from "./../components/MessageBox";
+import MessageBox, { Message, ChatPartner } from "../components/MessageBox";
 import { ArrowLeft } from "lucide-react";
-import { UserProfile } from "./../components/ProfileCard";
+import { UserProfile } from "../components/ProfileCard";
 import ash from "@/assets/ash.png";
 import hatsune from "@/assets/hatsune.png";
 import Layout from "../components/Layout";

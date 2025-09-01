@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
-import PixelAvatar from "./../components/PixelAvatar";
-import Navbar from "./../components/Navbar";
+import PixelAvatar from "../components/PixelAvatar";
+import Navbar from "../components/Navbar";
 import { useNavigate } from "react-router-dom";
-import { UserProfile } from "./../components/ProfileCard";
+import { UserProfile } from "../components/ProfileCard";
 import Layout from "@/components/Layout";
 import ash from "@/assets/ash.png";
 import hatsune from "@/assets/hatsune.png";
