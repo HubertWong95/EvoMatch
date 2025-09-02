@@ -1,3 +1,4 @@
+// src/routes/users.ts
 import { Router } from "express";
 import { prisma } from "../prisma";
 import { authMiddleware } from "../auth";
@@ -5,25 +6,30 @@ import { authMiddleware } from "../auth";
 const r = Router();
 
 r.get("/me", authMiddleware, async (req, res) => {
-  const user = (req as any).user;
+  const userId = (req as any).userId as string;
+
   const me = await prisma.user.findUnique({
-    where: { id: user.id },
+    where: { id: userId },
     include: { hobbies: { include: { hobby: true } } },
   });
+
+  if (!me) return res.status(404).json({ error: "User not found" });
+
   res.json({
     user: {
       ...me,
-      hobbies: me?.hobbies.map((uh) => uh.hobby.name) ?? [],
+      hobbies: me.hobbies.map((uh) => uh.hobby.name),
     },
   });
 });
 
 r.patch("/me", authMiddleware, async (req, res) => {
-  const user = (req as any).user;
+  const userId = (req as any).userId as string;
   const { name, bio, age, location, avatarUrl, figurineUrl, hobbies } =
     req.body || {};
+
   const updated = await prisma.user.update({
-    where: { id: user.id },
+    where: { id: userId },
     data: { name, bio, age, location, avatarUrl, figurineUrl },
   });
 
@@ -35,9 +41,9 @@ r.patch("/me", authMiddleware, async (req, res) => {
       )
     );
     // reset junctions
-    await prisma.userHobby.deleteMany({ where: { userId: user.id } });
+    await prisma.userHobby.deleteMany({ where: { userId } });
     await prisma.userHobby.createMany({
-      data: hobbyRecords.map((h) => ({ userId: user.id, hobbyId: h.id })),
+      data: hobbyRecords.map((h) => ({ userId, hobbyId: h.id })),
     });
   }
 
