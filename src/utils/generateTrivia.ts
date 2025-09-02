@@ -1,59 +1,45 @@
-import { TriviaQuestion } from "@/mock/triviaQuestions";
+// src/utils/generateTrivia.ts
 
-export async function generateTriviaQuestion(
-  yourHobbies: string[],
-  opponentHobbies: string[]
-): Promise<TriviaQuestion> {
-  const commonHobbies = yourHobbies.filter((hobby) =>
-    opponentHobbies.includes(hobby)
-  );
+export type TriviaItem = {
+  id: string;
+  text: string; // the question text shown to users
+  choices?: string[]; // optional multiple-choice support
+};
 
-  const sharedHobbyPrompt = `based on your shared interest in ${commonHobbies.join(
-    ", "
-  )}`;
+const BANK: TriviaItem[] = [
+  { id: "q_coffee_tea", text: "Coffee or tea?" },
+  { id: "q_morning_night", text: "Are you a morning person or a night owl?" },
+  {
+    id: "q_outdoor_indoor",
+    text: "Prefer outdoor adventures or cozy indoor days?",
+  },
+  { id: "q_cat_dog", text: "Cats or dogs?" },
+  { id: "q_travel_plan", text: "Plan trips or go with the flow?" },
+  { id: "q_games", text: "Console, PC, or board games?" },
+  { id: "q_music", text: "Live concerts or playlists at home?" },
+  { id: "q_food", text: "Sweet or savory?" },
+  { id: "q_read_watch", text: "Read a book or watch a movie?" },
+  { id: "q_art", text: "Make art or visit museums?" },
+  { id: "q_hike", text: "Hike a mountain or stroll a city?" },
+  { id: "q_cook", text: "Cook at home or dine out?" },
+  { id: "q_learn", text: "Learn by doing or by reading?" },
+  { id: "q_spont", text: "Spontaneous or scheduled?" },
+  { id: "q_social", text: "Big parties or small hangouts?" },
+];
 
-  const matchPrompt = `that helps two people who like different things — like ${yourHobbies.join(
-    ", "
-  )} and ${opponentHobbies.join(", ")} — discover if they vibe`;
-
-  const promptContext =
-    commonHobbies.length > 0 ? sharedHobbyPrompt : matchPrompt;
-
-  const prompt = `
-Generate a fun, open-ended trivia question ${promptContext}.
-Make it playful and short — like something you'd hear on a first date.
-Only return the question itself — no commentary, explanation, or formatting.
-`.trim();
-
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-3.5-turbo",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.8,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(
-      `OpenAI Error: ${error.error?.message || response.statusText}`
-    );
+/**
+ * Returns 10 trivia items. If you later fetch server-generated questions,
+ * keep this as a frontend fallback (offline/demo).
+ */
+export function generateTrivia(): TriviaItem[] {
+  // simple shuffle and take 10
+  const arr = [...BANK];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-
-  const data = await response.json();
-  const question = data?.choices?.[0]?.message?.content
-    ?.trim()
-    .replace(/^Question:\s*/i, "");
-
-  if (!question) throw new Error("Failed to generate question.");
-
-  return {
-    question,
-    opponentAnswer: opponentHobbies[0] || "Pizza",
-  };
+  return arr.slice(0, 10);
 }
+
+// Provide default export too (so either import style works)
+export default generateTrivia;

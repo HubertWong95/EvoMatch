@@ -1,0 +1,117 @@
+// server/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  username     String        @unique
+  email        String?       @unique
+  passwordHash String
+  name         String?
+  age          Int?
+  bio          String?
+  avatarUrl    String?
+  figurineUrl  String?
+  location     String?
+
+  // Hobbies (many-to-many via junction)
+  hobbies      UserHobby[]
+
+  // Matches (two back-relations, A and B)
+  matchesA     Match[]       @relation("MatchesA")
+  matchesB     Match[]       @relation("MatchesB")
+
+  // Messages authored by this user
+  messagesFrom Message[]     @relation("UserMessagesFrom")
+
+  createdAt    DateTime      @default(now())
+}
+
+model Hobby {
+  id    String      @id @default(cuid())
+  name  String      @unique
+  users UserHobby[]
+}
+
+model UserHobby {
+  userId  String
+  hobbyId String
+
+  user    User  @relation(fields: [userId], references: [id])
+  hobby   Hobby @relation(fields: [hobbyId], references: [id])
+
+  @@id([userId, hobbyId])
+}
+
+// Live trivia session while two users are playing
+model MatchSession {
+  id            String   @id @default(cuid())
+  userAId       String
+  userBId       String
+  status        String   // "waiting" | "active" | "completed"
+  questions     Json
+  scoreA        Int      @default(0)
+  scoreB        Int      @default(0)
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
+}
+
+// Individual answers for each question in a session
+model Answer {
+  id            String   @id @default(cuid())
+  sessionId     String
+  userId        String
+  questionIndex Int
+  text          String
+  createdAt     DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([userId])
+}
+
+// Finalized match (once a session finishes with a pass score)
+model Match {
+  id        String   @id @default(cuid())
+
+  // user A
+  userA     User     @relation("MatchesA", fields: [userAId], references: [id])
+  userAId   String
+
+  // user B
+  userB     User     @relation("MatchesB", fields: [userBId], references: [id])
+  userBId   String
+
+  score     Int
+  createdAt DateTime @default(now())
+
+  @@index([userAId])
+  @@index([userBId])
+  @@unique([userAId, userBId]) // prevent duplicate pairs (optional)
+}
+
+// Chat messages between the two users of a Match
+model Message {
+  id        String   @id @default(cuid())
+  matchId   String
+
+  // author
+  from      User     @relation("UserMessagesFrom", fields: [fromId], references: [id])
+  fromId    String
+
+  // recipient (kept as a scalar; you can add a relation if desired)
+  toId      String
+
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([matchId])
+  @@index([fromId])
+  @@index([toId])
+}

@@ -1,12 +1,14 @@
+// src/main.tsx
 import React from "react";
 import ReactDOM from "react-dom/client";
-import App from "./App.tsx";
-import "./index.css";
-// Import userService to initialize it
-import "@/lib/userService";
+import "@/styles/index.css";
+import AppRouter from "@/app/router";
+import { AuthProvider } from "@/features/auth/useAuth";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <AuthProvider>
+      <AppRouter />
+    </AuthProvider>
   </React.StrictMode>
 );
