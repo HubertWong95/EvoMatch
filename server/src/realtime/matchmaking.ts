@@ -1,61 +1,105 @@
-import { Server } from "socket.io";
+import type { Server } from "socket.io";
 import { prisma } from "../prisma";
 import { generateQuestions } from "../services/ai";
 
-type QueueEntry = { userId: string; socketId: string };
-const queue: QueueEntry[] = [];
+type QueueEntry = {
+  userId: string;
+  socketId: string;
+  hobbyFilters?: string[]; // names; undefined/empty => no filter
+};
 
-export function enqueue(userId: string, socketId: string) {
-  if (!queue.find((q) => q.userId === userId)) queue.push({ userId, socketId });
+const queue: Map<string, QueueEntry> = new Map();
+
+export function enqueue(
+  userId: string,
+  socketId: string,
+  hobbyFilters?: string[]
+) {
+  const filters =
+    Array.isArray(hobbyFilters) && hobbyFilters.length > 0
+      ? hobbyFilters
+      : undefined;
+  queue.set(userId, { userId, socketId, hobbyFilters: filters });
 }
 
 export function dequeue(userId: string) {
-  const idx = queue.findIndex((q) => q.userId === userId);
-  if (idx >= 0) queue.splice(idx, 1);
+  queue.delete(userId);
+}
+
+function compatible(a: QueueEntry, b: QueueEntry) {
+  if (a.userId === b.userId) return false;
+  if (!a.hobbyFilters || a.hobbyFilters.length === 0) return true;
+  if (!b.hobbyFilters || b.hobbyFilters.length === 0) return true;
+  const setB = new Set(b.hobbyFilters.map((h) => h.toLowerCase()));
+  return a.hobbyFilters.some((h) => setB.has(h.toLowerCase()));
+}
+
+async function hobbyNames(userId: string): Promise<string[]> {
+  const rows = await prisma.userHobby.findMany({
+    where: { userId },
+    include: { hobby: true },
+  });
+  return rows.map((r) => r.hobby.name);
 }
 
 export async function tryMatch(io: Server) {
-  if (queue.length < 2) return;
+  if (queue.size < 2) return;
 
-  const a = queue.shift()!;
-  const b = queue.shift()!;
-  if (!a || !b) return;
+  const entries = Array.from(queue.values());
+  for (let i = 0; i < entries.length; i++) {
+    for (let j = i + 1; j < entries.length; j++) {
+      const a = entries[i];
+      const b = entries[j];
+      if (!compatible(a, b)) continue;
 
-  const [userA, userB] = await Promise.all([
-    prisma.user.findUnique({ where: { id: a.userId } }),
-    prisma.user.findUnique({ where: { id: b.userId } }),
-  ]);
+      // Remove both from queue
+      dequeue(a.userId);
+      dequeue(b.userId);
 
-  const questions = await generateQuestions(userA ?? {}, userB ?? {}, 10);
+      const [userA, userB] = await Promise.all([
+        prisma.user.findUnique({ where: { id: a.userId } }),
+        prisma.user.findUnique({ where: { id: b.userId } }),
+      ]);
 
-  const session = await prisma.matchSession.create({
-    data: {
-      userAId: a.userId,
-      userBId: b.userId,
-      status: "active",
-      questions,
-    },
-  });
+      // Pre-generate questions and persist
+      const questions = await generateQuestions(userA ?? {}, userB ?? {}, 10);
 
-  // Notify both users
-  io.to(a.socketId).emit("match:found", {
-    opponentId: b.userId,
-    sessionId: session.id,
-  });
-  io.to(b.socketId).emit("match:found", {
-    opponentId: a.userId,
-    sessionId: session.id,
-  });
+      const session = await prisma.matchSession.create({
+        data: {
+          userAId: a.userId,
+          userBId: b.userId,
+          status: "pending", // wait until both press Start
+          questions,
+        },
+      });
 
-  // Send first question
-  io.to(a.socketId).emit("session:question", {
-    sessionId: session.id,
-    index: 0,
-    question: questions[0],
-  });
-  io.to(b.socketId).emit("session:question", {
-    sessionId: session.id,
-    index: 0,
-    question: questions[0],
-  });
+      // Send opponent cards (client shows MatchConfirm)
+      io.to(a.socketId).emit("queue:matched", {
+        sessionId: session.id,
+        opponent: {
+          id: b.userId,
+          name: userB?.name || userB?.username || "Opponent",
+          avatarUrl: userB?.avatarUrl ?? undefined,
+          figurineUrl: userB?.figurineUrl ?? undefined,
+          hobbies: await hobbyNames(b.userId),
+          location: userB?.location ?? undefined,
+        },
+      });
+      io.to(b.socketId).emit("queue:matched", {
+        sessionId: session.id,
+        opponent: {
+          id: a.userId,
+          name: userA?.name || userA?.username || "Opponent",
+          avatarUrl: userA?.avatarUrl ?? undefined,
+          figurineUrl: userA?.figurineUrl ?? undefined,
+          hobbies: await hobbyNames(a.userId),
+          location: userA?.location ?? undefined,
+        },
+      });
+
+      // IMPORTANT: Do NOT send the first question here.
+      // We'll wait for both clients to emit "session:ready" and let socket.ts start.
+      return;
+    }
+  }
 }

@@ -1,14 +1,23 @@
-import React, { useState } from "react";
+// src/features/auth/Login.tsx
+import React, { useEffect, useState } from "react";
 import { useAuth } from "./useAuth";
 import { cn } from "@/lib/utils";
+import { useNavigate } from "react-router-dom";
 
 export default function Login() {
-  const { login, register, isLoading } = useAuth();
+  const { login, register, isLoading, user } = useAuth();
+  const navigate = useNavigate();
+
   const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
+
+  // If already authenticated, bounce away from the auth screen
+  useEffect(() => {
+    if (user) navigate("/discover", { replace: true });
+  }, [user, navigate]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,6 +28,7 @@ export default function Login() {
       } else {
         await register(username.trim(), password, name.trim() || undefined);
       }
+      navigate("/discover", { replace: true });
     } catch (e: any) {
       setErr(e?.message || "Something went wrong");
     }

@@ -12,7 +12,6 @@ import { useAuth } from "@/features/auth/useAuth";
 import { getSocket } from "@/lib/socket";
 import { generateTrivia } from "@/utils/generateTrivia";
 
-// Basic shapes for local state
 type Opponent = {
   id: string;
   name: string;
@@ -30,7 +29,7 @@ export default function Discover() {
   const [opponent, setOpponent] = useState<Opponent | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
-  // trivia pipeline (client fallback; server will drive this later)
+  // trivia state
   const [questions, setQuestions] = useState<string[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [myScore, setMyScore] = useState(0);
@@ -39,72 +38,136 @@ export default function Discover() {
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") : null;
   const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const mountedRef = useRef(true);
 
-  const inDemoMode = useMemo(() => {
-    // If we cannot connect a socket (no backend yet), we run demo flow.
-    return !token;
-  }, [token]);
+  const inDemoMode = useMemo(() => !token, [token]);
 
-  // Socket setup
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // Socket setup (singleton)
   useEffect(() => {
     if (!token) return;
-    try {
-      const s = getSocket(token);
-      socketRef.current = s;
 
-      // Matched event -> show opponent card then start session
-      s.on(
-        "queue:matched",
-        (payload: { sessionId: string; opponent: Opponent }) => {
-          setOpponent(payload.opponent);
-          setSessionId(payload.sessionId);
-          setQueueState("matched");
-        }
-      );
+    const s = getSocket(token);
+    socketRef.current = s;
 
-      // Server sends question text
-      s.on("session:question", (payload: { index: number; text: string }) => {
-        setQuestions((prev) => {
-          const next = [...prev];
-          next[payload.index] = payload.text;
-          return next;
-        });
-        setQuestionIndex(payload.index);
-        setQueueState("in-session");
+    setSocketConnected(s.connected);
+
+    const onConnect = () => setSocketConnected(true);
+    const onDisconnect = () => setSocketConnected(false);
+
+    // --- Matching (support new and legacy events) ---
+    const onMatched = (payload: { sessionId: string; opponent: Opponent }) => {
+      if (!mountedRef.current) return;
+      setOpponent(payload.opponent);
+      setSessionId(payload.sessionId);
+      setQueueState("matched");
+    };
+
+    const onMatchedLegacy = (payload: {
+      opponentId: string;
+      sessionId: string;
+    }) => {
+      if (!mountedRef.current) return;
+      setOpponent({ id: payload.opponentId, name: "Opponent" });
+      setSessionId(payload.sessionId);
+      setQueueState("matched");
+    };
+
+    // Ready-up: server will emit this after both clicked Start
+    const onStarted = (payload: { sessionId: string }) => {
+      // We actually flip to "in-session" on first question;
+      // this event is informational (useful for a spinner if desired).
+      // console.debug("[discover] session:started", payload);
+    };
+
+    // Questions (accept {text} or {question})
+    const onQuestion = (payload: {
+      sessionId?: string;
+      index?: number;
+      text?: string;
+      question?: string;
+    }) => {
+      const idx = typeof payload.index === "number" ? payload.index : 0;
+      const qText =
+        typeof payload.text === "string"
+          ? payload.text
+          : typeof payload.question === "string"
+          ? payload.question
+          : undefined;
+      if (!mountedRef.current || !qText) return;
+
+      setQuestions((prev) => {
+        const next = [...prev];
+        next[idx] = qText;
+        return next;
       });
+      setQuestionIndex(idx);
+      setQueueState("in-session"); // enter gameplay only when a question arrives
+    };
 
-      // Server updates score after comparing both answers
-      s.on("session:score", (payload: { scoreA: number; scoreB: number }) => {
-        // Assume current user is A; server can send a role flag if needed
-        setMyScore(payload.scoreA);
-        setOppScore(payload.scoreB);
-      });
+    const onScore = (payload: { scoreA?: number; scoreB?: number }) => {
+      if (!mountedRef.current) return;
+      if (typeof payload.scoreA === "number") setMyScore(payload.scoreA);
+      if (typeof payload.scoreB === "number") setOppScore(payload.scoreB);
+    };
 
-      // Session complete
-      s.on(
-        "session:complete",
-        (payload: { matched: boolean; finalScore: number }) => {
-          // You can navigate or show a modal here; for now just log
-          // In a real flow, redirect to /matches if matched
-          console.log("session complete", payload);
-        }
-      );
-    } catch {
-      // If socket fails, remain in demo mode
-    }
+    const onComplete = (payload: any) => {
+      // console.debug("[discover] session:complete", payload);
+      // Optional: navigate to /matches or show a summary
+    };
+
+    const onEnded = (payload: { reason: string; sessionId: string }) => {
+      if (!mountedRef.current) return;
+      // Opponent left or session cancelled; reset
+      setQueueState("idle");
+      setOpponent(null);
+      setSessionId(null);
+      setQuestions([]);
+      setQuestionIndex(0);
+      setMyScore(0);
+      setOppScore(0);
+    };
+
+    s.on("connect", onConnect);
+    s.on("disconnect", onDisconnect);
+    s.on("queue:matched", onMatched);
+    s.on("match:found", onMatchedLegacy); // legacy compatibility
+    s.on("session:started", onStarted);
+    s.on("session:question", onQuestion);
+    s.on("session:score", onScore);
+    s.on("session:complete", onComplete);
+    s.on("session:ended", onEnded);
+
+    // leave queue on tab close
+    const leave = () => s.emit("queue:leave");
+    window.addEventListener("beforeunload", leave);
 
     return () => {
-      socketRef.current?.off("queue:matched");
-      socketRef.current?.off("session:question");
-      socketRef.current?.off("session:score");
-      socketRef.current?.off("session:complete");
+      window.removeEventListener("beforeunload", leave);
+      s.off("connect", onConnect);
+      s.off("disconnect", onDisconnect);
+      s.off("queue:matched", onMatched);
+      s.off("match:found", onMatchedLegacy);
+      s.off("session:started", onStarted);
+      s.off("session:question", onQuestion);
+      s.off("session:score", onScore);
+      s.off("session:complete", onComplete);
+      s.off("session:ended", onEnded);
     };
   }, [token]);
 
-  // Join queue (server) or start demo
+  // Join queue (server) or run demo
   const handleFindOpponent = useCallback(() => {
+    if (queueState === "searching") return;
+
     if (inDemoMode) {
-      // Demo: fake opponent + local questions
       const demoOpponent: Opponent = {
         id: "demo-2",
         name: "Jordan (demo)",
@@ -117,7 +180,7 @@ export default function Discover() {
       setQueueState("matched");
       setSessionId("demo-session");
 
-      const qs = generateTrivia(10); // fallback questions
+      const qs = generateTrivia(10);
       setQuestions(qs);
       setQuestionIndex(0);
       setMyScore(0);
@@ -125,12 +188,14 @@ export default function Discover() {
       return;
     }
 
-    // Real queue
+    const payload: Record<string, any> = {};
+    if (user?.hobbies && user.hobbies.length > 0) {
+      payload.hobbyFilters = user.hobbies;
+    }
+
     setQueueState("searching");
-    socketRef.current?.emit("queue:join", {
-      hobbyFilters: user?.hobbies ?? [],
-    });
-  }, [inDemoMode, user?.hobbies]);
+    socketRef.current?.emit("queue:join", payload);
+  }, [inDemoMode, queueState, user?.hobbies]);
 
   const handleCancelQueue = useCallback(() => {
     if (inDemoMode) {
@@ -143,46 +208,38 @@ export default function Discover() {
     setOpponent(null);
   }, [inDemoMode]);
 
+  // ✅ Ready-up: tell the server we’re ready; wait for first question to switch UI
   const handleStartMatch = useCallback(() => {
     if (inDemoMode) {
       setQueueState("in-session");
-      // in demo, questions are already generated
       return;
     }
-    // With a real server, the server will push the first question automatically.
-    // If you need to trigger it, you can emit: socket.emit("session:start", { sessionId });
-    setQueueState("in-session");
-  }, [inDemoMode]);
+    if (!sessionId) return;
+    socketRef.current?.emit("session:ready", { sessionId });
+  }, [inDemoMode, sessionId]);
 
   const handleSubmitAnswer = useCallback(
     (answer: string) => {
       if (!sessionId) return;
 
       if (inDemoMode) {
-        // Local similarity: naive compare to a fake opponent answer
-        // (For demo we just randomly decide similarity)
-        const similar = Math.random() > 0.4; // ~60% agree
+        const similar = Math.random() > 0.4;
         setMyScore((s) => s + (similar ? 1 : -1));
         setOppScore((s) => s + (similar ? 1 : -1));
-
         const next = questionIndex + 1;
-        if (next < questions.length) {
-          setQuestionIndex(next);
-        } else {
-          // end of session
-          // In real flow you'd persist and route to /matches if >=5
-          console.log("Demo session complete. Final score:", myScore);
-        }
+        if (next < questions.length) setQuestionIndex(next);
         return;
       }
 
+      // Server accepts either {index} or {questionIndex}
       socketRef.current?.emit("session:answer", {
         sessionId,
-        questionIndex,
+        index: questionIndex,
+        questionIndex: questionIndex,
         text: answer,
       });
     },
-    [inDemoMode, questionIndex, questions.length, sessionId, myScore]
+    [inDemoMode, questionIndex, questions.length, sessionId]
   );
 
   return (
@@ -218,7 +275,12 @@ export default function Discover() {
           )}
 
           <span className="font-pixel text-sm opacity-70">
-            Mode: {inDemoMode ? "Demo (no server)" : "Live"}
+            Mode:{" "}
+            {inDemoMode
+              ? "Demo (no server)"
+              : socketConnected
+              ? "Live"
+              : "Connecting…"}
           </span>
         </div>
       </section>
