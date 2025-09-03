@@ -3,44 +3,37 @@ import React from "react";
 import HobbyBadge from "./HobbyBadge";
 import type { Profile } from "./types";
 
-// If you still want pixel avatars, you can keep using your existing component:
-import PixelAvatar from "@/components/PixelAvatar";
-
 export default function ProfileCard({ profile }: { profile: Profile }) {
+  const img = profile.avatarUrl || profile.figurineUrl || "";
   return (
     <article className="grid grid-cols-[72px,1fr] gap-4 rounded-xl border-4 border-black bg-white p-4 shadow">
       <div className="flex items-start">
-        {profile.avatarUrl ? (
-          <img
-            src={profile.avatarUrl}
-            alt={profile.name || profile.username}
-            className="h-16 w-16 rounded-md border-2 border-black object-cover"
-          />
-        ) : profile.figurineUrl ? (
-          <img
-            src={profile.figurineUrl}
-            alt={profile.name || profile.username}
-            className="h-16 w-16 rounded-md border-2 border-black object-cover"
-          />
-        ) : (
-          <div className="h-16 w-16">
-            <PixelAvatar seed={profile.username} />
-          </div>
-        )}
+        <div className="h-[72px] w-[72px] overflow-hidden rounded-lg border-2 border-black bg-amber-100">
+          {img ? (
+            <img
+              src={img}
+              alt={profile.name || profile.username}
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center font-pixel text-[10px] opacity-60">
+              No avatar
+            </div>
+          )}
+        </div>
       </div>
 
       <div>
-        <header className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="font-pixel text-lg leading-tight">
-              {profile.name || profile.username}
-            </h3>
-            <p className="font-pixel text-xs opacity-70">
-              {profile.location ?? "Somewhere nearby"}
-              {profile.age ? ` • ${profile.age}` : ""}
-            </p>
-          </div>
-        </header>
+        <div className="flex items-baseline justify-between gap-3">
+          <h3 className="font-pixel text-lg">
+            {profile.name || profile.username}
+          </h3>
+          {profile.location && (
+            <span className="font-pixel text-xs opacity-70">
+              {profile.location}
+            </span>
+          )}
+        </div>
 
         {profile.bio && (
           <p className="mt-2 text-sm leading-relaxed">{profile.bio}</p>

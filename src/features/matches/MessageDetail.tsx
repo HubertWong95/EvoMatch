@@ -1,4 +1,3 @@
-// src/features/matches/MessageDetail.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "@/lib/apiClient";
@@ -12,6 +11,7 @@ type ChatMessage = {
   toId: string;
   body: string;
   createdAt: string;
+  clientNonce?: string; // <<— NEW
 };
 type Opponent = {
   id: string;
@@ -27,58 +27,108 @@ export default function MessageDetail() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+
   const token =
     typeof window !== "undefined" ? localStorage.getItem("token") : null;
   const inDemoMode = useMemo(() => !token, [token]);
 
+  // Track seen IDs to avoid duplicates from multiple events
+  const seenIdsRef = useRef<Set<string>>(new Set());
+  // Track our own pending nonces for optimistic replacement
+  const myNoncesRef = useRef<Set<string>>(new Set());
+
   // Load history
   useEffect(() => {
-    let active = true;
+    let alive = true;
     (async () => {
       try {
         const res = await api<{ opponent: Opponent; messages: ChatMessage[] }>(
-          `/api/messages?matchId=${matchId}`
+          `/messages?matchId=${matchId}`
         );
-        if (!active) return;
+        if (!alive) return;
         setOpponent(res.opponent);
         setMessages(res.messages);
-      } catch {
-        if (!active) return;
-        // demo seed
-        setOpponent({
-          id: "demo-2",
-          name: "Jordan (demo)",
-          figurineUrl:
-            "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/4.png",
-        });
-        setMessages([
-          {
-            id: "demo-msg-1",
-            fromId: "demo-2",
-            toId: "me",
-            body: "Hey! That trivia round was fun 😄",
-            createdAt: new Date(Date.now() - 1000 * 60 * 5).toISOString(),
-          },
-        ]);
+        // seed seenIds with existing messages
+        const next = new Set<string>();
+        for (const m of res.messages) if (m.id) next.add(m.id);
+        seenIdsRef.current = next;
       } finally {
-        if (active) setLoading(false);
+        if (alive) setLoading(false);
       }
     })();
     return () => {
-      active = false;
+      alive = false;
+      seenIdsRef.current.clear();
+      myNoncesRef.current.clear();
     };
   }, [matchId]);
 
-  // Live updates via socket
+  // Socket listeners — handle BOTH events but dedupe
   useEffect(() => {
-    if (!token) return; // demo mode without socket
+    if (!token) return;
     const s = getSocket(token);
-    const onNew = (payload: { matchId: string; message: ChatMessage }) => {
-      if (payload.matchId !== matchId) return;
-      setMessages((m) => [...m, payload.message]);
+
+    const normalize = (payload: any): ChatMessage | null => {
+      if (!payload) return null;
+      const msg = payload.message || payload;
+      const body = msg.body ?? msg.text;
+      if (!body) return null;
+      return {
+        id: msg.id,
+        fromId: msg.fromId,
+        toId: msg.toId,
+        body,
+        createdAt: msg.createdAt,
+        clientNonce: msg.clientNonce,
+      };
     };
+
+    const appendOrReplace = (msg: ChatMessage) => {
+      // 1) If server echoes our nonce, replace optimistic message
+      if (msg.clientNonce && myNoncesRef.current.has(msg.clientNonce)) {
+        setMessages((prev) => {
+          const localId = `local-${msg.clientNonce}`;
+          const idx = [...prev].reverse().findIndex((m) => m.id === localId);
+          if (idx !== -1) {
+            const realIdx = prev.length - 1 - idx;
+            const next = prev.slice();
+            next[realIdx] = msg;
+            seenIdsRef.current.add(msg.id);
+            myNoncesRef.current.delete(msg.clientNonce!);
+            return next;
+          }
+          // If we didn't find a matching optimistic message, just dedupe by id:
+          if (msg.id && seenIdsRef.current.has(msg.id)) return prev;
+          seenIdsRef.current.add(msg.id);
+          return [...prev, msg];
+        });
+        return;
+      }
+
+      // 2) Otherwise, dedupe by server id (covers double events)
+      if (msg.id && seenIdsRef.current.has(msg.id)) return;
+      seenIdsRef.current.add(msg.id);
+      setMessages((prev) => [...prev, msg]);
+    };
+
+    const onChat = (p: any) => {
+      if (p.matchId !== matchId) return;
+      const n = normalize(p);
+      if (!n) return;
+      appendOrReplace(n);
+    };
+
+    const onNew = (p: any) => {
+      if (p.matchId !== matchId) return;
+      const n = normalize(p);
+      if (!n) return;
+      appendOrReplace(n);
+    };
+
+    s.on("chat:message", onChat);
     s.on("message:new", onNew);
     return () => {
+      s.off("chat:message", onChat);
       s.off("message:new", onNew);
     };
   }, [matchId, token]);
@@ -93,38 +143,32 @@ export default function MessageDetail() {
 
   const handleSend = async (text: string) => {
     if (!user || !opponent) return;
+    const clientNonce = `${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    myNoncesRef.current.add(clientNonce);
 
+    // optimistic
     const optimistic: ChatMessage = {
-      id: `local-${Date.now()}`,
+      id: `local-${clientNonce}`,
       fromId: user.id,
       toId: opponent.id,
       body: text,
       createdAt: new Date().toISOString(),
+      clientNonce,
     };
     setMessages((m) => [...m, optimistic]);
 
-    if (inDemoMode) {
-      // simple echo in demo
-      setTimeout(() => {
-        setMessages((m) => [
-          ...m,
-          {
-            id: `echo-${Date.now()}`,
-            fromId: opponent.id,
-            toId: user.id,
-            body: "👍",
-            createdAt: new Date().toISOString(),
-          },
-        ]);
-      }, 600);
-      return;
-    }
+    if (inDemoMode) return;
 
     try {
-      // Prefer socket
       const s = getSocket(token!);
-      s.emit("message:send", { matchId, toId: opponent.id, body: text });
-      // Or REST: await api("/api/messages", { method: "POST", body: JSON.stringify({ matchId, toId: opponent.id, body: text }) })
+      s.emit("chat:send", {
+        matchId,
+        toUserId: opponent.id,
+        text,
+        clientNonce, // <<— send nonce so server echoes it back
+      });
     } catch (e) {
       console.error(e);
     }

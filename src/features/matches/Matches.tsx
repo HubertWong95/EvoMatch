@@ -29,11 +29,10 @@ export default function Matches() {
     let active = true;
     (async () => {
       try {
-        // GET /api/matches -> { matches: MatchRow[] }
-        const res = await api<{ matches: MatchRow[] }>("/api/matches");
+        // ✅ use "/matches" (apiClient adds /api)
+        const res = await api<{ matches: MatchRow[] }>("/matches");
         if (active) setRows(res.matches);
       } catch {
-        // demo fallback if backend not ready
         if (active) {
           setRows([
             {

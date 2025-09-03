@@ -3,8 +3,8 @@ import React from "react";
 
 type Props = {
   label: string;
-  interactive?: boolean; // if true, shows hover + pointer + onClick
-  selected?: boolean; // for toggle/filter UIs
+  interactive?: boolean;
+  selected?: boolean;
   onClick?: () => void;
   className?: string;
 };

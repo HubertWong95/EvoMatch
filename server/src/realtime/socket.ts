@@ -1,10 +1,8 @@
-// server/src/realtime/socket.ts
 import { Server as HttpServer } from "http";
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import { prisma } from "../prisma";
 import { enqueue, dequeue, tryMatch } from "./matchmaking";
-import { isSemanticallySimilar } from "../services/ai";
 
 const JWT_SECRET = process.env.JWT_SECRET || "replace-me";
 
@@ -66,11 +64,13 @@ export function initSocket(server: HttpServer) {
     const userId: string = (socket as any).userId;
     socket.join(userId);
 
+    // ---------- Queueing / Matchmaking ----------
     socket.on("queue:join", async (payload?: { hobbyFilters?: string[] }) => {
       try {
-        const raw = payload?.hobbyFilters;
         const hobbyFilters =
-          Array.isArray(raw) && raw.length > 0 ? raw : undefined;
+          Array.isArray(payload?.hobbyFilters) && payload!.hobbyFilters.length
+            ? payload!.hobbyFilters
+            : undefined;
         enqueue(userId, socket.id, hobbyFilters);
         await tryMatch(io);
       } catch (e) {
@@ -94,6 +94,7 @@ export function initSocket(server: HttpServer) {
       }
     });
 
+    // ---------- Session lifecycle ----------
     socket.on("session:ready", async ({ sessionId }: { sessionId: string }) => {
       try {
         const session = await prisma.matchSession.findUnique({
@@ -101,52 +102,38 @@ export function initSocket(server: HttpServer) {
         });
         if (!session) return;
 
-        const existing =
-          sessionReady.get(sessionId) ||
-          ({
+        let st = sessionReady.get(sessionId);
+        if (!st) {
+          st = {
             aUserId: session.userAId,
             bUserId: session.userBId,
             readyA: false,
             readyB: false,
-          } as ReadyState);
-
-        if (userId === session.userAId) {
-          existing.readyA = true;
-          existing.aSocketId = socket.id;
-        } else if (userId === session.userBId) {
-          existing.readyB = true;
-          existing.bSocketId = socket.id;
-        } else {
-          return;
+          };
+          sessionReady.set(sessionId, st);
         }
-        sessionReady.set(sessionId, existing);
+        if (userId === st.aUserId) {
+          st.readyA = true;
+          st.aSocketId = socket.id;
+        } else if (userId === st.bUserId) {
+          st.readyB = true;
+          st.bSocketId = socket.id;
+        }
 
-        // Start only when both are ready
-        if (existing.readyA && existing.readyB) {
-          await prisma.matchSession.update({
-            where: { id: sessionId },
-            data: { status: "active" },
-          });
+        if (st.readyA && st.readyB) {
+          io.to(st.aUserId).emit("session:started", { sessionId });
+          io.to(st.bUserId).emit("session:started", { sessionId });
 
-          const qs = (session.questions as unknown as any[]) ?? [];
-          const total = Math.max(1, qs.length); // ← total question count
-
-          const startedPayload = { sessionId, total }; // ← include total
-          if (existing.aSocketId)
-            io.to(existing.aSocketId).emit("session:started", startedPayload);
-          if (existing.bSocketId)
-            io.to(existing.bSocketId).emit("session:started", startedPayload);
-          io.to(existing.aUserId).emit("session:started", startedPayload);
-          io.to(existing.bUserId).emit("session:started", startedPayload);
-
-          const first = coerceToString(qs[0]) ?? "Coffee or tea?";
-          const qPayload = { sessionId, index: 0, text: first, total }; // ← include total
-          if (existing.aSocketId)
-            io.to(existing.aSocketId).emit("session:question", qPayload);
-          if (existing.bSocketId)
-            io.to(existing.bSocketId).emit("session:question", qPayload);
-          io.to(existing.aUserId).emit("session:question", qPayload);
-          io.to(existing.bUserId).emit("session:question", qPayload);
+          const qs = (session.questions as any[]) || [];
+          const firstQ = coerceToString(qs[0]) ?? "Pick one thing you love!";
+          const payload = {
+            sessionId,
+            index: 0,
+            text: firstQ,
+            total: qs.length || 10,
+          };
+          io.to(st.aUserId).emit("session:question", payload);
+          io.to(st.bUserId).emit("session:question", payload);
         }
       } catch (e) {
         console.error("[session:ready] error", e);
@@ -156,62 +143,52 @@ export function initSocket(server: HttpServer) {
 
     socket.on(
       "session:answer",
-      async (data: {
+      async ({
+        sessionId,
+        index,
+        answer,
+        scoreDelta,
+      }: {
         sessionId: string;
-        questionIndex?: number;
-        index?: number;
-        text: string;
+        index: number;
+        answer: string;
+        scoreDelta?: number;
       }) => {
         try {
-          const sessionId = data.sessionId;
-          const index =
-            typeof data.index === "number"
-              ? data.index
-              : (data.questionIndex as number);
-          const text = data.text;
-
-          if (!sessionId || typeof index !== "number" || !text) return;
           const session = await prisma.matchSession.findUnique({
             where: { id: sessionId },
           });
-          if (!session || session.status !== "active") return;
+          if (!session) return;
 
-          await prisma.answer.create({
-            data: { sessionId, userId, questionIndex: index, text },
-          });
+          const aUserId = session.userAId;
+          const bUserId = session.userBId;
 
-          const answers = await prisma.answer.findMany({
-            where: { sessionId, questionIndex: index },
-            orderBy: { createdAt: "asc" },
-          });
-          if (answers.length < 2) return;
-
-          const [a, b] = answers;
-          const similar = await isSemanticallySimilar(a.text, b.text);
-          const update = similar
-            ? { scoreA: session.scoreA + 1, scoreB: session.scoreB + 1 }
-            : { scoreA: session.scoreA - 1, scoreB: session.scoreB - 1 };
-
+          const field = userId === aUserId ? "scoreA" : "scoreB";
           const updated = await prisma.matchSession.update({
             where: { id: sessionId },
-            data: update,
+            data: {
+              [field]: (session as any)[field] + (scoreDelta ?? 1),
+            } as any,
           });
 
-          const scorePayload = {
-            index,
-            similar,
+          io.to(aUserId).emit("session:score", {
             scoreA: updated.scoreA,
             scoreB: updated.scoreB,
-          };
-          io.to(a.userId).emit("session:score", scorePayload);
-          io.to(b.userId).emit("session:score", scorePayload);
+          });
+          io.to(bUserId).emit("session:score", {
+            scoreA: updated.scoreA,
+            scoreB: updated.scoreB,
+          });
 
-          const qs = (session.questions as unknown as any[]) ?? [];
-          const total = Math.max(1, qs.length);
-          const nextIndex = index + 1;
+          const qs = (session.questions as any[]) || [];
+          const nextIndex = (index ?? 0) + 1;
+          const total = qs.length || 10;
 
-          if (nextIndex >= total) {
-            const pass = updated.scoreA >= 5 && updated.scoreB >= 5;
+          const completed =
+            nextIndex >= total || (updated.scoreA >= 6 && updated.scoreB >= 6);
+
+          if (completed) {
+            const pass = Math.min(updated.scoreA, updated.scoreB) >= 6;
 
             if (pass) {
               await prisma.match.upsert({
@@ -239,8 +216,14 @@ export function initSocket(server: HttpServer) {
               pass,
               finalScore: Math.min(updated.scoreA, updated.scoreB),
             };
-            io.to(a.userId).emit("session:complete", completePayload);
-            io.to(b.userId).emit("session:complete", completePayload);
+            io.to(aUserId).emit("session:complete", {
+              sessionId,
+              ...completePayload,
+            });
+            io.to(bUserId).emit("session:complete", {
+              sessionId,
+              ...completePayload,
+            });
             sessionReady.delete(sessionId);
           } else {
             const nextQ =
@@ -250,9 +233,9 @@ export function initSocket(server: HttpServer) {
               index: nextIndex,
               text: nextQ,
               total,
-            }; // ← include total
-            io.to(a.userId).emit("session:question", qPayload);
-            io.to(b.userId).emit("session:question", qPayload);
+            };
+            io.to(aUserId).emit("session:question", qPayload);
+            io.to(bUserId).emit("session:question", qPayload);
           }
         } catch (e) {
           console.error("[session:answer] error", e);
@@ -266,6 +249,68 @@ export function initSocket(server: HttpServer) {
         console.error("[session:leave endSession]", err)
       );
     });
+
+    // ---------- CHAT (dedupe-friendly via clientNonce) ----------
+    const handleSend = async (p: {
+      matchId: string;
+      toUserId: string;
+      text: string;
+      clientNonce?: string; // <<— NEW
+    }) => {
+      try {
+        const { matchId, toUserId, text, clientNonce } = p || {};
+        if (!matchId || !toUserId || !text?.trim()) return;
+
+        const match = await prisma.match.findUnique({ where: { id: matchId } });
+        if (!match) return;
+
+        const belongs =
+          (match.userAId === userId && match.userBId === toUserId) ||
+          (match.userBId === userId && match.userAId === toUserId);
+        if (!belongs) return;
+
+        const msg = await prisma.message.create({
+          data: {
+            matchId,
+            fromId: userId,
+            toId: toUserId,
+            body: text.trim(),
+          },
+        });
+
+        const shaped = {
+          id: msg.id,
+          matchId,
+          fromId: msg.fromId,
+          toId: msg.toId,
+          text: msg.body,
+          body: msg.body,
+          createdAt: msg.createdAt.toISOString(),
+          clientNonce: clientNonce || undefined, // <<— echo back for optimistic replace
+        };
+
+        // Emit to both participants
+        io.to(userId).emit("chat:message", shaped);
+        io.to(toUserId).emit("chat:message", shaped);
+
+        // Also emit generic event (some clients listen to this)
+        io.to(userId).emit("message:new", { matchId, message: shaped });
+        io.to(toUserId).emit("message:new", { matchId, message: shaped });
+      } catch (e) {
+        console.error("[chat:send] error", e);
+        socket.emit("chat:error", "Failed to send message");
+      }
+    };
+
+    socket.on("chat:send", handleSend);
+    socket.on("message:send", (p) =>
+      handleSend({
+        matchId: p?.matchId,
+        toUserId: p?.toId ?? p?.toUserId,
+        text: p?.text ?? p?.body,
+        clientNonce: p?.clientNonce,
+      })
+    );
 
     socket.on("disconnect", () => {
       try {
@@ -292,15 +337,18 @@ async function endSession(
   try {
     const st = sessionReady.get(sessionId);
     sessionReady.delete(sessionId);
+
     const session = await prisma.matchSession.findUnique({
       where: { id: sessionId },
     });
+
     if (session && session.status !== "completed") {
       await prisma.matchSession.update({
         where: { id: sessionId },
         data: { status: "cancelled", completedAt: new Date() },
       });
     }
+
     const payload = { reason, sessionId };
     if (st?.aUserId) io.to(st.aUserId).emit("session:ended", payload);
     if (st?.bUserId) io.to(st.bUserId).emit("session:ended", payload);

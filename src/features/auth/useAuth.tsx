@@ -14,18 +14,18 @@ export type AuthUser = {
   name?: string;
   age?: number;
   bio?: string;
-  avatarUrl?: string;
-  figurineUrl?: string;
   location?: string;
   hobbies?: string[];
+  avatarUrl?: string;
+  figurineUrl?: string;
 };
 
 type AuthContextValue = {
   user: AuthUser | null;
   setUser: React.Dispatch<React.SetStateAction<AuthUser | null>>;
-  /** Sign in using username/password (kept for backward-compat) */
+  /** Sign in (legacy helper; prefer the dedicated Login page) */
   login: (username: string, password: string) => Promise<void>;
-  /** Register using username/password (kept for backward-compat) */
+  /** Register (legacy helper) */
   register: (
     username: string,
     password: string,
@@ -33,56 +33,89 @@ type AuthContextValue = {
   ) => Promise<void>;
   /** Store a token you already have, then hydrate user from /me */
   loginWithToken: (token: string) => Promise<void>;
+  /** Clear auth */
   logout: () => void;
+  /** True while we’re fetching /me on initial load or after loginWithToken */
   isLoading: boolean;
 };
 
-const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+const AuthContext = createContext<AuthContextValue | null>(null);
 
-// Helper: /me might return { user: {...} } or just {...}
-function extractUser(me: any): AuthUser | null {
-  if (!me) return null;
-  if (me.user && typeof me.user === "object") return me.user as AuthUser;
-  if (me.id && me.username) return me as AuthUser;
-  return null;
+function extractUser(obj: any): AuthUser {
+  if (!obj) return {} as any;
+  const src = obj.user ?? obj.me ?? obj;
+  return {
+    id: String(src.id),
+    username: String(src.username ?? ""),
+    name: src.name ?? undefined,
+    age: src.age ?? undefined,
+    bio: src.bio ?? undefined,
+    location: src.location ?? undefined,
+    hobbies: Array.isArray(src.hobbies) ? src.hobbies : undefined,
+    // Normalize possible server keys:
+    avatarUrl:
+      src.avatarUrl ??
+      src.avatar_url ??
+      src.photoUrl ??
+      src.photo_url ??
+      undefined,
+    figurineUrl:
+      src.figurineUrl ??
+      src.figurine_url ??
+      src.pixelUrl ??
+      src.pixel_url ??
+      undefined,
+  };
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // On mount, if we have a token, fetch /me
+  // Initial boot: if token exists, hydrate from /me
   useEffect(() => {
-    let mounted = true;
     (async () => {
-      setIsLoading(true);
+      const token = localStorage.getItem("token");
+      if (!token) {
+        setIsLoading(false);
+        return;
+      }
       try {
-        const token = localStorage.getItem("token");
-        if (!token) return;
-        // IMPORTANT: no hardcoded /api — apiClient handles base via VITE_API_BASE
         const res = await api<any>("/me");
         const me = extractUser(res);
-        if (mounted) setUser(me);
+        setUser(me);
       } catch {
         localStorage.removeItem("token");
+        setUser(null);
       } finally {
-        if (mounted) setIsLoading(false);
+        setIsLoading(false);
       }
     })();
-    return () => {
-      mounted = false;
-    };
   }, []);
 
   const login = async (username: string, password: string) => {
-    // Server exposes POST /api/login (because index.ts mounts at /api),
-    // but our apiClient adds /api via VITE_API_BASE, so we call "/login" here.
-    const res = await api<{ token: string; user: AuthUser }>("/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
-    localStorage.setItem("token", res.token);
-    setUser(res.user);
+    setIsLoading(true);
+    try {
+      const res = await api<any>("/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
+      if (res?.token) {
+        localStorage.setItem("token", res.token);
+        const me = extractUser(res);
+        if (!me.id) {
+          // If /login didn’t include full profile, fetch /me
+          const fresh = await api<any>("/me");
+          setUser(extractUser(fresh));
+        } else {
+          setUser(me);
+        }
+      } else {
+        throw new Error("Invalid credentials");
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const register = async (
@@ -90,19 +123,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     password: string,
     name?: string
   ) => {
-    const res = await api<{ token: string; user: AuthUser }>("/register", {
-      method: "POST",
-      body: JSON.stringify({ username, password, name }),
-    });
-    localStorage.setItem("token", res.token);
-    setUser(res.user);
+    setIsLoading(true);
+    try {
+      const res = await api<any>("/register", {
+        method: "POST",
+        body: JSON.stringify({ username, password, name }),
+      });
+      if (res?.token) {
+        localStorage.setItem("token", res.token);
+        const fresh = await api<any>("/me");
+        setUser(extractUser(fresh));
+      } else {
+        throw new Error("Registration failed");
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const loginWithToken = async (token: string) => {
-    // Persist token, then hydrate user from /me
-    localStorage.setItem("token", token);
     setIsLoading(true);
     try {
+      localStorage.setItem("token", token);
       const res = await api<any>("/me");
       const me = extractUser(res);
       setUser(me);
