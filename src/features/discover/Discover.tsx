@@ -9,8 +9,9 @@ import React, {
 import MatchConfirm from "./MatchConfirm";
 import TriviaBox from "./TriviaBox";
 import { useAuth } from "@/features/auth/useAuth";
-import { getSocket } from "@/lib/socket";
+import { getSocket, disconnectSocket } from "@/lib/socket";
 import { generateTrivia } from "@/utils/generateTrivia";
+import { useNavigate } from "react-router-dom";
 
 type Opponent = {
   id: string;
@@ -24,14 +25,15 @@ type Opponent = {
 type QueueState = "idle" | "searching" | "matched" | "in-session";
 
 export default function Discover() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [queueState, setQueueState] = useState<QueueState>("idle");
   const [opponent, setOpponent] = useState<Opponent | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
 
-  // trivia state
   const [questions, setQuestions] = useState<string[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
+  const [totalQuestions, setTotalQuestions] = useState(10);
   const [myScore, setMyScore] = useState(0);
   const [oppScore, setOppScore] = useState(0);
 
@@ -39,131 +41,121 @@ export default function Discover() {
     typeof window !== "undefined" ? localStorage.getItem("token") : null;
   const socketRef = useRef<ReturnType<typeof getSocket> | null>(null);
   const [socketConnected, setSocketConnected] = useState(false);
-  const mountedRef = useRef(true);
 
   const inDemoMode = useMemo(() => !token, [token]);
 
+  // 🔄 Reset all state when the logged-in user changes
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+    setQueueState("idle");
+    setOpponent(null);
+    setSessionId(null);
+    setQuestions([]);
+    setQuestionIndex(0);
+    setTotalQuestions(10);
+    setMyScore(0);
+    setOppScore(0);
 
-  // Socket setup (singleton)
+    // hard reset socket as well
+    disconnectSocket();
+  }, [user?.id]);
+
+  // Socket setup
   useEffect(() => {
     if (!token) return;
 
     const s = getSocket(token);
     socketRef.current = s;
-
     setSocketConnected(s.connected);
 
     const onConnect = () => setSocketConnected(true);
     const onDisconnect = () => setSocketConnected(false);
 
-    // --- Matching (support new and legacy events) ---
     const onMatched = (payload: { sessionId: string; opponent: Opponent }) => {
-      if (!mountedRef.current) return;
       setOpponent(payload.opponent);
       setSessionId(payload.sessionId);
       setQueueState("matched");
+      setMyScore(0);
+      setOppScore(0);
+      setQuestionIndex(0);
+      setTotalQuestions(10);
     };
 
-    const onMatchedLegacy = (payload: {
-      opponentId: string;
-      sessionId: string;
-    }) => {
-      if (!mountedRef.current) return;
-      setOpponent({ id: payload.opponentId, name: "Opponent" });
-      setSessionId(payload.sessionId);
-      setQueueState("matched");
+    const onStarted = (payload: { sessionId: string; total?: number }) => {
+      if (payload.total && payload.total > 0) setTotalQuestions(payload.total);
     };
 
-    // Ready-up: server will emit this after both clicked Start
-    const onStarted = (payload: { sessionId: string }) => {
-      // We actually flip to "in-session" on first question;
-      // this event is informational (useful for a spinner if desired).
-      // console.debug("[discover] session:started", payload);
-    };
-
-    // Questions (accept {text} or {question})
     const onQuestion = (payload: {
-      sessionId?: string;
-      index?: number;
-      text?: string;
-      question?: string;
+      index: number;
+      text: string;
+      total?: number;
     }) => {
-      const idx = typeof payload.index === "number" ? payload.index : 0;
-      const qText =
-        typeof payload.text === "string"
-          ? payload.text
-          : typeof payload.question === "string"
-          ? payload.question
-          : undefined;
-      if (!mountedRef.current || !qText) return;
-
+      if (payload.total && payload.total > 0) setTotalQuestions(payload.total);
       setQuestions((prev) => {
         const next = [...prev];
-        next[idx] = qText;
+        next[payload.index] = payload.text;
         return next;
       });
-      setQuestionIndex(idx);
-      setQueueState("in-session"); // enter gameplay only when a question arrives
+      setQuestionIndex(payload.index);
+      setQueueState("in-session");
     };
 
-    const onScore = (payload: { scoreA?: number; scoreB?: number }) => {
-      if (!mountedRef.current) return;
-      if (typeof payload.scoreA === "number") setMyScore(payload.scoreA);
-      if (typeof payload.scoreB === "number") setOppScore(payload.scoreB);
+    const onScore = (payload: { scoreA: number; scoreB: number }) => {
+      setMyScore(payload.scoreA);
+      setOppScore(payload.scoreB);
     };
 
-    const onComplete = (payload: any) => {
-      // console.debug("[discover] session:complete", payload);
-      // Optional: navigate to /matches or show a summary
+    const onComplete = (_payload: {
+      matched?: boolean;
+      finalScore?: number;
+    }) => {
+      // Small delay for UX, then go to matches
+      setTimeout(() => navigate("/matches"), 800);
     };
 
-    const onEnded = (payload: { reason: string; sessionId: string }) => {
-      if (!mountedRef.current) return;
-      // Opponent left or session cancelled; reset
+    const onEnded = () => {
+      // if opponent leaves, bring user back to idle
       setQueueState("idle");
       setOpponent(null);
       setSessionId(null);
       setQuestions([]);
       setQuestionIndex(0);
+      setTotalQuestions(10);
       setMyScore(0);
       setOppScore(0);
     };
 
+    const onQueueError = () => setQueueState("idle");
+
     s.on("connect", onConnect);
     s.on("disconnect", onDisconnect);
     s.on("queue:matched", onMatched);
-    s.on("match:found", onMatchedLegacy); // legacy compatibility
     s.on("session:started", onStarted);
     s.on("session:question", onQuestion);
     s.on("session:score", onScore);
     s.on("session:complete", onComplete);
     s.on("session:ended", onEnded);
+    s.on("queue:error", onQueueError);
 
-    // leave queue on tab close
     const leave = () => s.emit("queue:leave");
     window.addEventListener("beforeunload", leave);
 
     return () => {
+      try {
+        s.emit("queue:leave");
+      } catch {}
       window.removeEventListener("beforeunload", leave);
       s.off("connect", onConnect);
       s.off("disconnect", onDisconnect);
       s.off("queue:matched", onMatched);
-      s.off("match:found", onMatchedLegacy);
       s.off("session:started", onStarted);
       s.off("session:question", onQuestion);
       s.off("session:score", onScore);
       s.off("session:complete", onComplete);
       s.off("session:ended", onEnded);
+      s.off("queue:error", onQueueError);
     };
-  }, [token]);
+  }, [token, navigate]);
 
-  // Join queue (server) or run demo
   const handleFindOpponent = useCallback(() => {
     if (queueState === "searching") return;
 
@@ -185,17 +177,29 @@ export default function Discover() {
       setQuestionIndex(0);
       setMyScore(0);
       setOppScore(0);
+      setTotalQuestions(10);
       return;
     }
 
-    const payload: Record<string, any> = {};
-    if (user?.hobbies && user.hobbies.length > 0) {
-      payload.hobbyFilters = user.hobbies;
+    if (!socketConnected) {
+      setTimeout(() => {
+        if (socketRef.current && !inDemoMode) {
+          doJoin();
+        }
+      }, 300);
+    } else {
+      doJoin();
     }
 
-    setQueueState("searching");
-    socketRef.current?.emit("queue:join", payload);
-  }, [inDemoMode, queueState, user?.hobbies]);
+    function doJoin() {
+      const payload: Record<string, any> = {};
+      if (user?.hobbies && user.hobbies.length > 0) {
+        payload.hobbyFilters = user.hobbies;
+      }
+      setQueueState("searching");
+      socketRef.current?.emit("queue:join", payload);
+    }
+  }, [inDemoMode, queueState, socketConnected, user?.hobbies]);
 
   const handleCancelQueue = useCallback(() => {
     if (inDemoMode) {
@@ -208,7 +212,6 @@ export default function Discover() {
     setOpponent(null);
   }, [inDemoMode]);
 
-  // ✅ Ready-up: tell the server we’re ready; wait for first question to switch UI
   const handleStartMatch = useCallback(() => {
     if (inDemoMode) {
       setQueueState("in-session");
@@ -227,19 +230,17 @@ export default function Discover() {
         setMyScore((s) => s + (similar ? 1 : -1));
         setOppScore((s) => s + (similar ? 1 : -1));
         const next = questionIndex + 1;
-        if (next < questions.length) setQuestionIndex(next);
+        if (next < totalQuestions) setQuestionIndex(next);
         return;
       }
 
-      // Server accepts either {index} or {questionIndex}
       socketRef.current?.emit("session:answer", {
         sessionId,
-        index: questionIndex,
-        questionIndex: questionIndex,
+        questionIndex,
         text: answer,
       });
     },
-    [inDemoMode, questionIndex, questions.length, sessionId]
+    [inDemoMode, questionIndex, sessionId, totalQuestions]
   );
 
   return (
@@ -295,7 +296,7 @@ export default function Discover() {
           sessionId={sessionId!}
           question={questions[questionIndex]}
           index={questionIndex}
-          total={questions.length || 10}
+          total={totalQuestions}
           myScore={myScore}
           oppScore={oppScore}
           onSubmitAnswer={handleSubmitAnswer}

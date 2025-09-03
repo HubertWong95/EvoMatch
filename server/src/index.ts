@@ -8,6 +8,8 @@ import userRoutes from "./routes/users";
 import matchRoutes from "./routes/matches";
 import messageRoutes from "./routes/messages";
 import { initSocket } from "./realtime/socket";
+import path from "path";
+import uploadRouter from "./routes/upload";
 
 const app = express();
 
@@ -63,3 +65,17 @@ initSocket(server);
 server.listen(PORT, () => {
   console.log(`API + Socket.IO listening on :${PORT}`);
 });
+
+// AFTER you create your express app:
+app.use("/uploads", (req, res, next) => {
+  // serve files from /uploads
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const express = require("express");
+  express.static(path.join(process.cwd(), "uploads"))(req, res, next);
+});
+
+// And register the upload API:
+app.use("/api/upload", uploadRouter);
+
+import messagesRouter from "./routes/messages";
+app.use("/api/messages", messagesRouter);

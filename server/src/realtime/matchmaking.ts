@@ -1,3 +1,4 @@
+// server/src/realtime/matchmaking.ts
 import type { Server } from "socket.io";
 import { prisma } from "../prisma";
 import { generateQuestions } from "../services/ai";
@@ -61,7 +62,7 @@ export async function tryMatch(io: Server) {
         prisma.user.findUnique({ where: { id: b.userId } }),
       ]);
 
-      // Pre-generate questions and persist
+      // Generate questions (always array<string>)
       const questions = await generateQuestions(userA ?? {}, userB ?? {}, 10);
 
       const session = await prisma.matchSession.create({
@@ -73,7 +74,12 @@ export async function tryMatch(io: Server) {
         },
       });
 
-      // Send opponent cards (client shows MatchConfirm)
+      const [aHobbies, bHobbies] = await Promise.all([
+        hobbyNames(a.userId),
+        hobbyNames(b.userId),
+      ]);
+
+      // Send opponent cards
       io.to(a.socketId).emit("queue:matched", {
         sessionId: session.id,
         opponent: {
@@ -81,7 +87,7 @@ export async function tryMatch(io: Server) {
           name: userB?.name || userB?.username || "Opponent",
           avatarUrl: userB?.avatarUrl ?? undefined,
           figurineUrl: userB?.figurineUrl ?? undefined,
-          hobbies: await hobbyNames(b.userId),
+          hobbies: bHobbies,
           location: userB?.location ?? undefined,
         },
       });
@@ -92,14 +98,12 @@ export async function tryMatch(io: Server) {
           name: userA?.name || userA?.username || "Opponent",
           avatarUrl: userA?.avatarUrl ?? undefined,
           figurineUrl: userA?.figurineUrl ?? undefined,
-          hobbies: await hobbyNames(a.userId),
+          hobbies: aHobbies,
           location: userA?.location ?? undefined,
         },
       });
 
-      // IMPORTANT: Do NOT send the first question here.
-      // We'll wait for both clients to emit "session:ready" and let socket.ts start.
-      return;
+      return; // only match one pair per tick
     }
   }
 }

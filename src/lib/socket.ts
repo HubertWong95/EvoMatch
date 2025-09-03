@@ -1,47 +1,38 @@
-// // src/lib/socket.ts
-// import { io, Socket } from "socket.io-client";
-// import { API_URL } from "./apiClient";
-
-// let socket: Socket | null = null;
-
-// export function connectSocket() {
-//   if (socket) return socket;
-//   socket = io(API_URL, {
-//     transports: ["websocket"], // avoids long-polling flakiness locally
-//     auth: { token: localStorage.getItem("token") || "" },
-//   });
-//   // optional: simple log hooks
-//   socket.on("connect", () => console.log("socket connected", socket?.id));
-//   socket.on("disconnect", (reason) =>
-//     console.log("socket disconnected", reason)
-//   );
-//   return socket;
-// }
-
-// export function getSocket() {
-//   return socket ?? connectSocket();
-// }
-
-// export function disconnectSocket() {
-//   if (socket) {
-//     socket.disconnect();
-//     socket = null;
-//   }
-// }
-
-// src/lib/socket.ts (client)
-// Pseudocode — ensure you use your actual server URL and options
+// src/lib/socket.ts
 import { io, Socket } from "socket.io-client";
 
 let socket: Socket | null = null;
+let currentToken: string | null = null;
 
 export function getSocket(token: string) {
-  if (socket) return socket;
+  if (socket && currentToken === token) return socket;
+
+  // If there is an old socket with a different token, kill it
+  if (socket && currentToken !== token) {
+    try {
+      socket.removeAllListeners();
+      socket.disconnect();
+    } catch {}
+    socket = null;
+  }
+
+  currentToken = token;
   socket = io("http://localhost:8080", {
     autoConnect: true,
     reconnection: true,
     transports: ["websocket"],
     auth: { token },
   });
+
   return socket;
+}
+
+export function disconnectSocket() {
+  if (!socket) return;
+  try {
+    socket.removeAllListeners();
+    socket.disconnect();
+  } catch {}
+  socket = null;
+  currentToken = null;
 }

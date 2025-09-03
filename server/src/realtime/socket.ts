@@ -4,11 +4,10 @@ import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import { prisma } from "../prisma";
 import { enqueue, dequeue, tryMatch } from "./matchmaking";
-import { isSimilar } from "./similarity";
+import { isSemanticallySimilar } from "../services/ai";
 
 const JWT_SECRET = process.env.JWT_SECRET || "replace-me";
 
-// Track readiness for sessions (in-memory)
 type ReadyState = {
   aUserId: string;
   bUserId: string;
@@ -20,9 +19,16 @@ type ReadyState = {
 const sessionReady: Map<string, ReadyState> = new Map();
 
 function coerceToString(q: any): string | undefined {
-  if (typeof q === "string") return q;
-  if (typeof q?.text === "string") return q.text;
-  if (typeof q?.question === "string") return q.question;
+  if (typeof q === "string") return q.trim();
+  if (typeof q?.text === "string") return q.text.trim();
+  if (typeof q?.question === "string") return q.question.trim();
+  if (typeof q === "string" && q.trim().startsWith("{")) {
+    try {
+      const obj = JSON.parse(q);
+      if (typeof obj?.text === "string") return obj.text.trim();
+      if (typeof obj?.question === "string") return obj.question.trim();
+    } catch {}
+  }
   return undefined;
 }
 
@@ -38,7 +44,6 @@ export function initSocket(server: HttpServer) {
     transports: ["websocket"],
   });
 
-  // Auth gate
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token || "";
     try {
@@ -61,7 +66,6 @@ export function initSocket(server: HttpServer) {
     const userId: string = (socket as any).userId;
     socket.join(userId);
 
-    // --- Queue Flow ---
     socket.on("queue:join", async (payload?: { hobbyFilters?: string[] }) => {
       try {
         const raw = payload?.hobbyFilters;
@@ -78,7 +82,6 @@ export function initSocket(server: HttpServer) {
     socket.on("queue:leave", () => {
       try {
         dequeue(userId);
-        // If user was waiting/active in a session, end it for both sides
         for (const [sid, st] of sessionReady) {
           if (st.aUserId === userId || st.bUserId === userId) {
             endSession(io, sid, "opponent_left").catch((err) =>
@@ -91,7 +94,6 @@ export function initSocket(server: HttpServer) {
       }
     });
 
-    // --- Ready-up Handshake ---
     socket.on("session:ready", async ({ sessionId }: { sessionId: string }) => {
       try {
         const session = await prisma.matchSession.findUnique({
@@ -121,14 +123,15 @@ export function initSocket(server: HttpServer) {
 
         // Start only when both are ready
         if (existing.readyA && existing.readyB) {
-          // NOTE: do NOT write startedAt (column doesn’t exist in your schema)
           await prisma.matchSession.update({
             where: { id: sessionId },
             data: { status: "active" },
           });
 
-          // notify both
-          const startedPayload = { sessionId };
+          const qs = (session.questions as unknown as any[]) ?? [];
+          const total = Math.max(1, qs.length); // ← total question count
+
+          const startedPayload = { sessionId, total }; // ← include total
           if (existing.aSocketId)
             io.to(existing.aSocketId).emit("session:started", startedPayload);
           if (existing.bSocketId)
@@ -136,11 +139,8 @@ export function initSocket(server: HttpServer) {
           io.to(existing.aUserId).emit("session:started", startedPayload);
           io.to(existing.bUserId).emit("session:started", startedPayload);
 
-          // send first question (defensive)
-          let qs = (session.questions as unknown as any[]) ?? [];
-          const first = coerceToString(qs[0]) ?? "Coffee or tea?"; // fallback if AI returned nothing
-
-          const qPayload = { sessionId, index: 0, text: first };
+          const first = coerceToString(qs[0]) ?? "Coffee or tea?";
+          const qPayload = { sessionId, index: 0, text: first, total }; // ← include total
           if (existing.aSocketId)
             io.to(existing.aSocketId).emit("session:question", qPayload);
           if (existing.bSocketId)
@@ -154,7 +154,6 @@ export function initSocket(server: HttpServer) {
       }
     });
 
-    // --- In-session Answers ---
     socket.on(
       "session:answer",
       async (data: {
@@ -181,14 +180,14 @@ export function initSocket(server: HttpServer) {
             data: { sessionId, userId, questionIndex: index, text },
           });
 
-          // Wait until both answers arrive
           const answers = await prisma.answer.findMany({
             where: { sessionId, questionIndex: index },
+            orderBy: { createdAt: "asc" },
           });
           if (answers.length < 2) return;
 
           const [a, b] = answers;
-          const similar = isSimilar(a.text, b.text);
+          const similar = await isSemanticallySimilar(a.text, b.text);
           const update = similar
             ? { scoreA: session.scoreA + 1, scoreB: session.scoreB + 1 }
             : { scoreA: session.scoreA - 1, scoreB: session.scoreB - 1 };
@@ -207,10 +206,11 @@ export function initSocket(server: HttpServer) {
           io.to(a.userId).emit("session:score", scorePayload);
           io.to(b.userId).emit("session:score", scorePayload);
 
-          // Next question or complete
-          let qs = (session.questions as unknown as any[]) ?? [];
+          const qs = (session.questions as unknown as any[]) ?? [];
+          const total = Math.max(1, qs.length);
           const nextIndex = index + 1;
-          if (nextIndex >= qs.length) {
+
+          if (nextIndex >= total) {
             const pass = updated.scoreA >= 5 && updated.scoreB >= 5;
 
             if (pass) {
@@ -244,9 +244,13 @@ export function initSocket(server: HttpServer) {
             sessionReady.delete(sessionId);
           } else {
             const nextQ =
-              coerceToString(qs[nextIndex]) ??
-              "Surprise me: pick one thing you love!";
-            const qPayload = { sessionId, index: nextIndex, text: nextQ };
+              coerceToString(qs[nextIndex]) ?? "Pick one thing you love!";
+            const qPayload = {
+              sessionId,
+              index: nextIndex,
+              text: nextQ,
+              total,
+            }; // ← include total
             io.to(a.userId).emit("session:question", qPayload);
             io.to(b.userId).emit("session:question", qPayload);
           }
@@ -257,7 +261,6 @@ export function initSocket(server: HttpServer) {
       }
     );
 
-    // --- Early Leave / Disconnect ends the session for both ---
     socket.on("session:leave", ({ sessionId }: { sessionId: string }) => {
       endSession(io, sessionId, "opponent_left").catch((err) =>
         console.error("[session:leave endSession]", err)

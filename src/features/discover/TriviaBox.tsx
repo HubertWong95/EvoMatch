@@ -1,12 +1,54 @@
-// src/features/discover/TriviaBox.tsx
-import React, { useState } from "react";
+// web/src/features/discover/TriviaBox.tsx
+import React, { useMemo, useState } from "react";
 
-type Opponent = {
-  id: string;
-  name: string;
-  avatarUrl?: string;
-  figurineUrl?: string;
+type Props = {
+  opponent: { id: string; name: string; avatarUrl?: string };
+  sessionId: string;
+  question: string | undefined;
+  index: number;
+  total: number;
+  myScore: number;
+  oppScore: number;
+  onSubmitAnswer: (answer: string) => void;
 };
+
+function onlyText(q: string | undefined): string {
+  if (!q) return "";
+  const t = q.trim();
+
+  // If someone stored a JSON blob or stringified object, extract text/question
+  if (
+    (t.startsWith("{") && t.endsWith("}")) ||
+    (t.startsWith("[") && t.endsWith("]"))
+  ) {
+    try {
+      const parsed = JSON.parse(t);
+      if (Array.isArray(parsed)) {
+        for (const x of parsed) {
+          if (typeof x === "string") return x;
+          if (typeof x?.text === "string") return x.text;
+          if (typeof x?.question === "string") return x.question;
+        }
+        return "";
+      }
+      if (typeof parsed === "string") return parsed;
+      if (typeof parsed?.text === "string") return parsed.text;
+      if (typeof parsed?.question === "string") return parsed.question;
+    } catch {
+      // Not valid JSON—fall through
+    }
+  }
+
+  // strip a "Question: " prefix if presents
+  return t.replace(/^Question:\s*/i, "");
+}
+
+function scoreColor(score: number) {
+  if (score >= 5) return "bg-green-500";
+  if (score >= 3) return "bg-yellow-400";
+  if (score >= 1) return "bg-orange-500";
+  return "bg-red-500";
+}
 
 export default function TriviaBox({
   opponent,
@@ -17,86 +59,72 @@ export default function TriviaBox({
   myScore,
   oppScore,
   onSubmitAnswer,
-}: {
-  opponent: Opponent;
-  sessionId: string;
-  question?: string;
-  index: number;
-  total: number;
-  myScore: number;
-  oppScore: number;
-  onSubmitAnswer: (answer: string) => void;
-}) {
+}: Props) {
   const [answer, setAnswer] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const qText = useMemo(() => onlyText(question), [question]);
 
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!answer.trim()) return;
-    setSubmitting(true);
-    try {
-      onSubmitAnswer(answer.trim());
-      setAnswer("");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  // single shared score (they move together)
+  const sharedScore = Math.min(myScore, oppScore);
+  const canSubmit = qText.length > 0 && answer.trim().length > 0;
 
   return (
     <section className="rounded-xl border-4 border-black bg-white p-4 shadow">
-      <header className="mb-4 flex items-center gap-3">
-        <img
-          src={opponent.figurineUrl || opponent.avatarUrl || "/favicon.svg"}
-          alt={opponent.name}
-          className="h-10 w-10 rounded-md border-2 border-black object-cover"
-        />
-        <div>
-          <div className="font-pixel text-sm">Playing vs {opponent.name}</div>
-          <div className="font-pixel text-xs opacity-70">
-            Session: {sessionId}
-          </div>
+      <div className="mb-3 flex items-center justify-between">
+        <div className="font-pixel text-lg">
+          Question {index + 1} / {total || 10}
         </div>
-
-        <div className="ml-auto flex items-center gap-2">
-          <span className="rounded-md border-2 border-black bg-game-green px-2 py-1 font-pixel text-xs">
-            You: {myScore}
+        <div className="flex items-center gap-2">
+          {opponent.avatarUrl && (
+            <img
+              src={opponent.avatarUrl}
+              alt={opponent.name}
+              className="h-8 w-8 rounded-full border border-black object-cover"
+            />
+          )}
+          <span className="font-pixel text-sm opacity-80">
+            vs {opponent.name}
           </span>
-          <span className="rounded-md border-2 border-black bg-game-pink px-2 py-1 font-pixel text-xs">
-            Opp: {oppScore}
-          </span>
-        </div>
-      </header>
-
-      <div className="mb-3 rounded-md border-2 border-black bg-game-yellow/60 p-3">
-        <div className="mb-1 font-pixel text-xs opacity-70">
-          Question {index + 1} / {Math.max(total, index + 1)}
-        </div>
-        <div className="font-pixel text-base">
-          {question ?? "Waiting for question…"}
         </div>
       </div>
 
-      <form onSubmit={onSubmit} className="flex items-center gap-2">
+      <p className="mb-4 rounded-md border-2 border-black bg-game-yellow/30 p-3 font-pixel">
+        {qText || "Loading question…"}
+      </p>
+
+      {/* Energy bar: single shared score */}
+      <div className="mb-4">
+        <div className="mb-1 flex items-center justify-between text-xs font-pixel opacity-75">
+          <span>Match energy</span>
+          <span>{sharedScore} / 10</span>
+        </div>
+        <div className="h-3 w-full overflow-hidden rounded-full border-2 border-black bg-gray-200">
+          <div
+            className={`h-full ${scoreColor(sharedScore)} transition-all`}
+            style={{ width: `${Math.max(0, Math.min(10, sharedScore)) * 10}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-2">
         <input
-          type="text"
-          className="min-w-0 flex-1 rounded-md border-2 border-black px-3 py-2 focus:outline-none"
+          className="flex-1 rounded-md border-2 border-black p-2 font-pixel"
           placeholder="Type your answer…"
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
-          disabled={!question}
+          disabled={!qText}
         />
         <button
-          type="submit"
-          disabled={!question || submitting}
-          className="rounded-md border-2 border-black bg-game-blue px-4 py-2 font-pixel text-game-white shadow hover:translate-y-0.5 disabled:opacity-60"
+          className="rounded-md border-2 border-black bg-game-green px-4 py-2 font-pixel shadow disabled:opacity-60"
+          onClick={() => {
+            if (!canSubmit) return;
+            onSubmitAnswer(answer.trim());
+            setAnswer("");
+          }}
+          disabled={!canSubmit}
         >
-          {submitting ? "Sending…" : "Submit"}
+          Submit
         </button>
-      </form>
-
-      <p className="mt-3 font-pixel text-xs opacity-70">
-        +1 similar • −1 mismatch • Match at ≥ 5 points.
-      </p>
+      </div>
     </section>
   );
 }
