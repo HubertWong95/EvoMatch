@@ -1,10 +1,10 @@
 // src/features/auth/Login.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import WebcamCapture from "@/features/webcam/WebcamCapture";
+import WebcamCapture from "@//features/webcam/WebcamCapture";
 import { generatePixelAvatar } from "@/utils/generatePixelAvatar";
 import { useAuth } from "@/features/auth/useAuth";
-import { api } from "@/lib/api";
+import { api } from "@/lib/apiClient";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -12,18 +12,15 @@ export default function LoginPage() {
 
   const [activeTab, setActiveTab] = useState<"login" | "register">("register");
 
-  // shared
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
-  // register-only
   const [name, setName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>();
   const [showCamera, setShowCamera] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  // If you want to default to the last used tab per session:
   useEffect(() => {
     const saved = sessionStorage.getItem("authTab");
     if (saved === "login" || saved === "register") setActiveTab(saved);
@@ -34,19 +31,24 @@ export default function LoginPage() {
 
   async function onLogin(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
+    setError(null);
     setBusy(true);
     try {
-      const res = await api.post("/auth/login", { username, password });
+      // backend routes are /api/login → with API_BASE=/api this hits /api/login
+      const res = await api<{ token: string }>("/login", {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      });
       if (res?.token) {
         localStorage.setItem("token", res.token);
         loginWithToken(res.token);
-        navigate("/profile"); // or "/discover"
+        navigate("/profile");
       } else {
         setError("Invalid credentials");
       }
     } catch (err: any) {
-      setError(err?.message || "Login failed");
+      if (err?.status === 401) setError("Invalid credentials");
+      else setError(err?.message || "Login failed");
     } finally {
       setBusy(false);
     }
@@ -54,24 +56,28 @@ export default function LoginPage() {
 
   async function onRegister(e: React.FormEvent) {
     e.preventDefault();
-    setError("");
+    setError(null);
     setBusy(true);
     try {
-      const res = await api.post("/auth/register", {
-        username,
-        password,
-        name: name || undefined,
-        avatarUrl: avatarUrl || undefined, // send to backend
+      const res = await api<{ token: string }>("/register", {
+        method: "POST",
+        body: JSON.stringify({
+          username,
+          password,
+          name: name || undefined,
+          avatarUrl: avatarUrl || undefined,
+        }),
       });
       if (res?.token) {
         localStorage.setItem("token", res.token);
         loginWithToken(res.token);
-        navigate("/profile"); // or "/discover"
+        navigate("/profile");
       } else {
         setError("Registration failed");
       }
     } catch (err: any) {
-      setError(err?.message || "Registration failed");
+      if (err?.status === 409) setError("That username is taken.");
+      else setError(err?.message || "Registration failed");
     } finally {
       setBusy(false);
     }
@@ -105,7 +111,7 @@ export default function LoginPage() {
       )}
 
       {activeTab === "login" ? (
-        <form onSubmit={onLogin} className="space-y-4">
+        <form onSubmit={onLogin} className="space-y-4" aria-busy={busy}>
           <label className="block">
             <span className="font-pixel text-sm">Username</span>
             <input
@@ -137,7 +143,7 @@ export default function LoginPage() {
           </button>
         </form>
       ) : (
-        <form onSubmit={onRegister} className="space-y-4">
+        <form onSubmit={onRegister} className="space-y-4" aria-busy={busy}>
           <label className="block">
             <span className="font-pixel text-sm">Display name (optional)</span>
             <input
@@ -169,7 +175,6 @@ export default function LoginPage() {
             />
           </label>
 
-          {/* Avatar */}
           <div className="text-center">
             {avatarUrl && (
               <img
@@ -180,8 +185,9 @@ export default function LoginPage() {
             )}
             <button
               type="button"
-              onClick={() => setShowCamera(true)}
-              className="rounded-md border-2 border-black bg-amber-300 px-3 py-2 font-pixel text-black"
+              onClick={() => !busy && setShowCamera(true)}
+              disabled={busy}
+              className="rounded-md border-2 border-black bg-amber-300 px-3 py-2 font-pixel text-black disabled:opacity-50"
             >
               {avatarUrl ? "Retake Avatar Photo" : "Take Avatar Photo"}
             </button>
@@ -197,19 +203,19 @@ export default function LoginPage() {
         </form>
       )}
 
-      {/* Webcam modal */}
       {showCamera && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="rounded-lg border-4 border-black bg-white p-3">
             <WebcamCapture
               onCapture={async (dataUrl) => {
+                setBusy(true);
                 try {
-                  // Your util should upload to your server/OpenAI pipeline and return a usable URL
                   const url = await generatePixelAvatar(dataUrl);
                   setAvatarUrl(url);
-                } catch (e) {
+                } catch {
                   setError("Failed to generate avatar. Try again.");
                 } finally {
+                  setBusy(false);
                   setShowCamera(false);
                 }
               }}

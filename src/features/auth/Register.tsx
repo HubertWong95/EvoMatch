@@ -1,10 +1,10 @@
-// web/src/features/auth/Register.tsx
+// src/features/auth/Register.tsx
 import React, { useState } from "react";
-import WebcamCapture from "@/components/WebcamCapture";
+import WebcamCapture from "@/features/webcam/WebcamCapture";
 import { generatePixelAvatar } from "@/utils/generatePixelAvatar";
 import { useAuth } from "@/features/auth/useAuth";
 import { useNavigate } from "react-router-dom";
-import { api } from "@/lib/api"; // must expose api.post("/auth/register", ...)
+import { api } from "@/lib/apiClient";
 
 export default function Register() {
   const navigate = useNavigate();
@@ -17,26 +17,31 @@ export default function Register() {
 
   const [showCamera, setShowCamera] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
-    setError("");
+    setError(null);
     try {
-      const res = await api.post("/auth/register", {
-        username,
-        password,
-        name,
-        avatarUrl, // ← send to backend
+      const res = await api<{ token: string }>("/register", {
+        method: "POST",
+        body: JSON.stringify({
+          username,
+          password,
+          name,
+          avatarUrl,
+        }),
       });
+
       if (res?.token) {
         localStorage.setItem("token", res.token);
         loginWithToken(res.token);
-        navigate("/profile"); // or "/matches" if you prefer
+        navigate("/profile");
       }
     } catch (err: any) {
-      setError(err?.message || "Registration failed");
+      if (err?.status === 409) setError("That username is taken.");
+      else setError(err?.message || "Registration failed");
     } finally {
       setBusy(false);
     }
@@ -52,7 +57,7 @@ export default function Register() {
         </div>
       )}
 
-      <form onSubmit={onSubmit} className="space-y-3">
+      <form onSubmit={onSubmit} className="space-y-3" aria-busy={busy}>
         <label className="block">
           <span className="font-pixel text-sm">Username</span>
           <input
@@ -96,8 +101,9 @@ export default function Register() {
           )}
           <button
             type="button"
-            onClick={() => setShowCamera(true)}
-            className="rounded-md border-2 border-black bg-game-yellow px-3 py-1 font-pixel"
+            onClick={() => !busy && setShowCamera(true)}
+            disabled={busy}
+            className="rounded-md border-2 border-black bg-game-yellow px-3 py-1 font-pixel disabled:opacity-60"
           >
             {avatarUrl ? "Retake Avatar Photo" : "Take Avatar Photo"}
           </button>
@@ -118,7 +124,7 @@ export default function Register() {
             <WebcamCapture
               onCapture={async (dataUrl) => {
                 try {
-                  const url = await generatePixelAvatar(dataUrl); // your util should return a URL we can use
+                  const url = await generatePixelAvatar(dataUrl);
                   setAvatarUrl(url);
                 } catch (e) {
                   setError("Failed to generate avatar. Try again.");

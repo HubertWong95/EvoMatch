@@ -10,6 +10,7 @@ import messageRoutes from "./routes/messages";
 import { initSocket } from "./realtime/socket";
 import path from "path";
 import uploadRouter from "./routes/upload";
+import avatarRouter from "./routes/avatar";
 
 const app = express();
 
@@ -79,3 +80,5 @@ app.use("/api/upload", uploadRouter);
 
 import messagesRouter from "./routes/messages";
 app.use("/api/messages", messagesRouter);
+
+app.use("/avatar", avatarRouter);
