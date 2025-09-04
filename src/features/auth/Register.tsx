@@ -17,6 +17,32 @@ function dataUrlToFile(dataUrl: string, filename = "avatar.png"): File {
   return new File([u8], filename, { type: mime });
 }
 
+// Try a few likely upload endpoints (if your backend has any).
+async function uploadAvatarWithFallbacks(file: File) {
+  const endpoints = [
+    "/upload/avatar?persist=1&max=512",
+    "/upload?persist=1&max=512",
+    "/users/me/avatar?persist=1&max=512",
+    "/avatar?persist=1&max=512",
+  ];
+  for (const path of endpoints) {
+    try {
+      const fd = new FormData();
+      fd.append("avatar", file);
+      fd.append("file", file);
+      console.log("[Register] try upload →", path);
+      const res = await api<any>(path, { method: "POST", body: fd });
+      console.log("[Register] upload JSON", res);
+      const url: string | undefined =
+        res?.avatarUrl || res?.url || res?.image || res?.path;
+      if (url) return url;
+    } catch (e) {
+      console.warn("[Register] upload attempt failed:", path, e);
+    }
+  }
+  throw new Error("Could not find a working upload endpoint.");
+}
+
 export default function Register() {
   const navigate = useNavigate();
   const { loginWithToken, setUser } = useAuth();
@@ -38,44 +64,63 @@ export default function Register() {
     setError(null);
 
     try {
+      console.log("[Register] submit", {
+        username,
+        hasPreview: !!avatarPreview,
+      });
+
       // 1) Create account
-      const res = await api<{ token: string }>("/register", {
+      const reg = await api<{ token: string }>("/register", {
         method: "POST",
         body: JSON.stringify({ username, password, name }),
       });
-      if (!res?.token) throw new Error("Registration failed");
-      localStorage.setItem("token", res.token);
-      await loginWithToken(res.token);
+      console.log("[Register] /register →", reg);
+      if (!reg?.token) throw new Error("Registration failed");
+      localStorage.setItem("token", reg.token);
+      await loginWithToken(reg.token);
 
-      // 2) Upload cartoon avatar and persist to DB in one step
-      if (avatarPreview) {
-        const file = avatarPreview.startsWith("data:")
-          ? dataUrlToFile(avatarPreview, "avatar_cartoon.png")
-          : null;
+      // 2) Save avatar
+      if (avatarPreview?.startsWith("data:")) {
+        const file = dataUrlToFile(avatarPreview, "avatar_cartoon.png");
 
-        if (file) {
-          const fd = new FormData();
-          fd.append("avatar", file);
-          const up = await fetch("/api/upload/avatar?persist=1&max=512", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${res.token}` },
-            body: fd,
+        try {
+          // Prefer a real upload endpoint if you have one
+          const finalUrl = await uploadAvatarWithFallbacks(file);
+
+          // Persist URL to user record
+          console.log("[Register] PATCH /me with avatarUrl", finalUrl);
+          await api("/me", {
+            method: "PATCH",
+            body: JSON.stringify({ avatarUrl: finalUrl }),
           });
-          if (up.ok) {
-            const j = await up.json();
-            const finalUrl = j?.url as string | undefined;
-            if (finalUrl) {
-              // reflect immediately in UI; /me already returns avatarUrl
-              setUser((prev) =>
-                prev ? { ...prev, avatarUrl: finalUrl } : prev
-              );
-            }
-          }
+
+          // Reflect & cache
+          setUser((prev) => (prev ? { ...prev, avatarUrl: finalUrl } : prev));
+          localStorage.setItem("avatarUrl", finalUrl);
+          console.log("[Register] cached avatarUrl:", finalUrl);
+        } catch (uploadErr) {
+          // ⛑️ Fallback: store the base64 data URL directly in backend
+          console.warn(
+            "[Register] no upload endpoint found; falling back to data URL storage via /me PATCH"
+          );
+          await api("/me", {
+            method: "PATCH",
+            body: JSON.stringify({ avatarUrl: avatarPreview }),
+          });
+
+          setUser((prev) =>
+            prev ? { ...prev, avatarUrl: avatarPreview } : prev
+          );
+          localStorage.setItem("avatarUrl", avatarPreview);
+          console.log("[Register] cached data-URL avatar");
         }
+      } else {
+        console.log("[Register] no avatarPreview to upload");
       }
 
       navigate("/profile");
     } catch (err: any) {
+      console.error("[Register] error", err);
       if (err?.status === 409) setError("That username is taken.");
       else setError(err?.message || "Registration failed");
     } finally {
@@ -161,19 +206,25 @@ export default function Register() {
         </button>
       </form>
 
-      {/* Webcam Modal — close immediately on capture */}
+      {/* Webcam modal */}
       {showCamera && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="rounded-xl border-4 border-black bg-white p-4 shadow">
             <WebcamCapture
               onCapture={async (imageDataUrl) => {
-                setShowCamera(false); // close instantly
-                setIsGenerating(true); // show overlay while generating
+                setShowCamera(false);
+                setIsGenerating(true);
                 setError(null);
                 try {
+                  console.log("[Register] generatePixelAvatar()…");
                   const pixel = await generatePixelAvatar(imageDataUrl);
+                  console.log(
+                    "[Register] pixel data URL length:",
+                    pixel?.length
+                  );
                   setAvatarPreview(pixel);
                 } catch (err: any) {
+                  console.error("[Register] generatePixelAvatar error", err);
                   setError(
                     err?.message || "Failed to generate avatar. Try again."
                   );
@@ -194,7 +245,6 @@ export default function Register() {
         </div>
       )}
 
-      {/* Generating overlay */}
       {isGenerating && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl bg-white/80">
           <div className="flex items-center gap-3 rounded-md border-4 border-black bg-white px-4 py-3 font-pixel shadow">

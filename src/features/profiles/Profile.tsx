@@ -6,32 +6,35 @@ import ProfileCard from "./ProfileCard";
 import type { Profile } from "./types";
 import { api } from "@/lib/apiClient";
 
-function normalizeProfile(src: any): Profile {
+// Map relative image paths to the API proxy so the browser can fetch them in dev.
+function resolveAvatarUrl(u?: string | null): string {
+  if (!u) return "";
+  if (u.startsWith("data:image")) return u; // data URL
+  if (/^https?:\/\//i.test(u)) return u; // absolute
+  if (u.startsWith("/")) return `/api${u}`; // relative → proxy through /api
+  return `/api/${u}`;
+}
+
+function normalizeProfile(src: any, opts?: { isMe?: boolean }): Profile {
   const base = src?.user ?? src?.me ?? src ?? {};
-  // Accept various possible server keys
   const avatarCandidate =
     base.avatarUrl ??
     base.avatar_url ??
     base.photoUrl ??
     base.photo_url ??
     base.avatar ??
+    base.url ??
+    base.image ??
     base.profile?.avatarUrl ??
     undefined;
-  const figurineCandidate =
-    base.figurineUrl ??
-    base.figurine_url ??
-    base.pixelUrl ??
-    base.pixel_url ??
-    base.profile?.figurineUrl ??
-    undefined;
 
-  // As a final fallback (e.g., just after register) read cached avatar
+  // Only use localStorage fallback if this is the logged-in user
   const fallbackLocal =
-    typeof window !== "undefined"
+    opts?.isMe && typeof window !== "undefined"
       ? localStorage.getItem("avatarUrl") || undefined
       : undefined;
 
-  return {
+  const normalized: Profile = {
     id: String(base.id ?? ""),
     username: String(base.username ?? ""),
     name: base.name ?? "",
@@ -40,8 +43,18 @@ function normalizeProfile(src: any): Profile {
     location: base.location ?? "",
     hobbies: Array.isArray(base.hobbies) ? base.hobbies : [],
     avatarUrl: avatarCandidate || fallbackLocal,
-    figurineUrl: figurineCandidate,
+    figurineUrl:
+      base.figurineUrl ??
+      base.figurine_url ??
+      base.pixelUrl ??
+      base.pixel_url ??
+      base.profile?.figurineUrl ??
+      undefined,
   };
+
+  console.log("[Profile] normalizeProfile in:", src);
+  console.log("[Profile] normalizeProfile out:", normalized);
+  return normalized;
 }
 
 export default function ProfilePage() {
@@ -51,21 +64,21 @@ export default function ProfilePage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fallback list; replace with server-provided master list when available
   const allHobbies = useMemo(
     () => ["Gaming", "Cooking", "Music", "Hiking", "Art", "Reading", "Tech"],
     []
   );
 
-  // Load latest profile from server; fallback to Auth (and localStorage avatar)
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
         const res = await api<any>("/me");
+        console.log("[Profile] /me:", res);
         if (!alive) return;
         setProfile(normalizeProfile(res));
-      } catch {
+      } catch (e) {
+        console.warn("[Profile] /me failed, fallback to Auth", e);
         if (!alive) return;
         if (user) setProfile(normalizeProfile({ user }));
       }
@@ -75,7 +88,10 @@ export default function ProfilePage() {
     };
   }, [user?.id]);
 
-  const displayAvatar = profile?.avatarUrl || profile?.figurineUrl || "";
+  const displayAvatar = resolveAvatarUrl(
+    profile?.avatarUrl || profile?.figurineUrl || ""
+  );
+  console.log("[Profile] displayAvatar resolved:", displayAvatar || "<empty>");
 
   const toggleHobby = (h: string) => {
     setProfile((prev) =>
@@ -96,19 +112,17 @@ export default function ProfilePage() {
     setSaved(false);
     setError(null);
     try {
-      await api("/me", {
-        method: "PATCH",
-        body: JSON.stringify({
-          name: profile.name || undefined,
-          bio: profile.bio || undefined,
-          location: profile.location || undefined,
-          hobbies: profile.hobbies ?? [],
-          avatarUrl: profile.avatarUrl ?? undefined,
-          figurineUrl: profile.figurineUrl ?? undefined,
-        }),
-      });
+      const payload = {
+        name: profile.name || undefined,
+        bio: profile.bio || undefined,
+        location: profile.location || undefined,
+        hobbies: profile.hobbies ?? [],
+        avatarUrl: profile.avatarUrl ?? undefined,
+        figurineUrl: profile.figurineUrl ?? undefined,
+      };
+      console.log("[Profile] PATCH /me payload", payload);
+      await api("/me", { method: "PATCH", body: JSON.stringify(payload) });
 
-      // reflect in Auth (navbar etc.)
       setUser((prev) =>
         prev
           ? {
@@ -123,13 +137,13 @@ export default function ProfilePage() {
           : prev
       );
 
-      // update cache for future fallbacks
       if (profile.avatarUrl)
         localStorage.setItem("avatarUrl", profile.avatarUrl);
 
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
     } catch (e: any) {
+      console.error("[Profile] save error", e);
       setError(e?.message || "Failed to save profile.");
     } finally {
       setSaving(false);
@@ -146,7 +160,6 @@ export default function ProfilePage() {
 
   return (
     <div className="grid gap-6">
-      {/* Editable card */}
       <section className="rounded-xl border-4 border-black bg-white p-4 shadow">
         <h2 className="mb-4 font-pixel text-xl">Your Profile</h2>
 
@@ -242,7 +255,6 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      {/* Preview uses the same normalized avatar */}
       <section>
         <h2 className="mb-3 font-pixel text-xl">Preview</h2>
         <ProfileCard

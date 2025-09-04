@@ -39,6 +39,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 function extractUser(obj: any): AuthUser {
   if (!obj) return {} as any;
   const src = obj.user ?? obj.me ?? obj;
+
   const u: AuthUser = {
     id: String(src.id),
     username: String(src.username ?? ""),
@@ -53,6 +54,8 @@ function extractUser(obj: any): AuthUser {
       src.photoUrl ??
       src.photo_url ??
       src.avatar ??
+      src.url ?? // accept { url } as avatar
+      src.image ?? // accept { image } as avatar
       src.profile?.avatarUrl ??
       undefined,
     figurineUrl:

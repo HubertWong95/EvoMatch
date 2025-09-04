@@ -2,83 +2,98 @@ import "dotenv/config";
 import http from "http";
 import express from "express";
 import cors from "cors";
+import path from "path";
+import fs from "fs/promises";
+
 import { CORS_ORIGINS, PORT } from "./config";
+
+// REST routes (your originals)
 import authRoutes from "./routes/auth";
 import userRoutes from "./routes/users";
 import matchRoutes from "./routes/matches";
 import messageRoutes from "./routes/messages";
+
+// Realtime (your original Socket.IO bootstrap)
 import { initSocket } from "./realtime/socket";
-import path from "path";
+
+// Avatar & Upload (the new pieces we added)
 import uploadRouter from "./routes/upload";
 import avatarRouter from "./routes/avatar";
 
 const app = express();
+const server = http.createServer(app);
 
-// Build a permissive allowlist for local dev (both 5173/5174 + any localhost port)
-const DEV_ALLOW = new Set([
-  ...CORS_ORIGINS,
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://127.0.0.1:5173",
-  "http://127.0.0.1:5174",
-]);
+// ---------- CORS ----------
+/**
+ * Use your original config-driven CORS.
+ * If CORS_ORIGINS is set (comma-separated), only allow those.
+ * If not set, reflect the origin for local dev.
+ */
+const corsOptions: cors.CorsOptions = CORS_ORIGINS.length
+  ? {
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true); // same-origin / curl
+        if (CORS_ORIGINS.includes(origin)) return cb(null, true);
+        cb(new Error(`CORS: origin ${origin} not allowed`));
+      },
+      credentials: true,
+      allowedHeaders: ["Content-Type", "Authorization"],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    }
+  : {
+      origin: true, // reflect request origin for dev
+      credentials: true,
+      allowedHeaders: ["Content-Type", "Authorization"],
+      methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    };
 
-app.use(
-  cors({
-    origin(origin, cb) {
-      // allow server-to-server / curl (no Origin header)
-      if (!origin) return cb(null, true);
-      // allow any localhost:* to avoid Vite port shuffle during dev
-      const isLocalhost =
-        /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin) ||
-        DEV_ALLOW.has(origin);
-      if (isLocalhost) return cb(null, true);
-      console.warn("[CORS] blocked Origin:", origin);
-      cb(new Error(`Not allowed by CORS: ${origin}`));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
-app.use(express.json());
+// ---------- Body parsing ----------
+app.use(express.json({ limit: "15mb" }));
+app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 
-// Quick health/diagnostics route
-app.get("/health", (req, res) => {
-  res.json({
-    ok: true,
-    at: new Date().toISOString(),
-    corsOrigins: Array.from(DEV_ALLOW),
-  });
-});
+// ---------- Static /uploads ----------
+const UPLOAD_ROOT = path.join(process.cwd(), "uploads");
+async function ensureUploads() {
+  try {
+    await fs.mkdir(UPLOAD_ROOT, { recursive: true });
+  } catch (e) {
+    console.error("[server] ensure uploads dir failed", e);
+  }
+}
+ensureUploads();
 
-// REST routes
+// Serve uploaded files (so /uploads/... works)
+app.use("/uploads", express.static(UPLOAD_ROOT));
+// Convenience when FE proxies /api → BE: also serve under /api/uploads
+app.use("/api/uploads", express.static(UPLOAD_ROOT));
+
+// ---------- Health ----------
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+// ---------- REST routes (original wiring) ----------
 app.use("/api", authRoutes);
 app.use("/api", userRoutes);
 app.use("/api", matchRoutes);
 app.use("/api", messageRoutes);
 
-// Socket.IO
-const server = http.createServer(app);
+// ---------- Upload & Avatar (new) ----------
+app.use("/api/upload", uploadRouter); // POST /api/upload/avatar?persist=1&max=512
+app.use("/avatar", avatarRouter); // if your FE hits this path directly
+
+// ---------- Socket.IO (original wiring) ----------
+/**
+ * IMPORTANT:
+ * Your Matches tab depended on the original initSocket behavior
+ * (events, rooms, auth hookup). We call your original initializer here
+ * and pass the HTTP server so it attaches to the same port & path.
+ */
 initSocket(server);
 
+// ---------- Start ----------
 server.listen(PORT, () => {
-  console.log(`API + Socket.IO listening on :${PORT}`);
+  console.log(`[server] listening on http://localhost:${PORT}`);
+  console.log(`[server] uploads served from ${UPLOAD_ROOT}`);
 });
-
-// AFTER you create your express app:
-app.use("/uploads", (req, res, next) => {
-  // serve files from /uploads
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const express = require("express");
-  express.static(path.join(process.cwd(), "uploads"))(req, res, next);
-});
-
-// And register the upload API:
-app.use("/api/upload", uploadRouter);
-
-import messagesRouter from "./routes/messages";
-app.use("/api/messages", messagesRouter);
-
-app.use("/avatar", avatarRouter);

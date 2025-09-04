@@ -1,80 +1,94 @@
 // server/src/routes/upload.ts
-import { Router } from "express";
+// Avatar upload route using multer + sharp + Prisma
+
+import express from "express";
 import multer from "multer";
-import path from "path";
-import fs from "fs";
 import sharp from "sharp";
-import jwt from "jsonwebtoken";
-import { prisma } from "../prisma";
+import path from "path";
+import fs from "fs/promises";
+import { prisma } from "../prisma"; // prisma client (server/src/prisma.ts)
+import { requireAuth } from "../auth"; // must populate req.user.id (server/src/auth.ts)
 
-const upload = multer({ storage: multer.memoryStorage() });
-const r = Router();
+type AuthedReq = express.Request & { user?: { id: string } };
 
-const JWT_SECRET = process.env.JWT_SECRET || "replace-me";
+const router = express.Router();
 
-// ensure uploads dir exists
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-// Extract userId from Bearer token (optional)
-function getUserIdFromAuth(hdr?: string): string | undefined {
-  if (!hdr) return;
-  const m = hdr.match(/^Bearer\s+(.+)$/i);
-  if (!m) return;
-  const token = m[1];
-  try {
-    const p: any = jwt.verify(token, JWT_SECRET);
-    return p?.sub || p?.id || p?.userId;
-  } catch {
-    return;
-  }
-}
-
-/**
- * POST /api/upload/avatar
- * Form field: "avatar" (image)
- * Query:
- *   persist=1  -> also save avatarUrl on the user
- *   max=512    -> max width/height
- */
-r.post("/upload/avatar", upload.single("avatar"), async (req, res) => {
-  try {
-    const file = req.file;
-    if (!file?.buffer) return res.status(400).json({ error: "missing file" });
-
-    const max = Number(req.query.max || 512);
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-    const outPath = path.join(UPLOAD_DIR, id);
-
-    await sharp(file.buffer)
-      .rotate()
-      .resize({ width: max, height: max, fit: "inside" })
-      .png({ quality: 90 })
-      .toFile(outPath);
-
-    const publicUrl = `/uploads/${id}`;
-
-    // Optionally persist on user
-    const persist = String(req.query.persist || req.query.save || "0") === "1";
-    if (persist) {
-      const uid = getUserIdFromAuth(req.headers.authorization);
-      if (uid) {
-        try {
-          await prisma.user.update({
-            where: { id: String(uid) },
-            data: { avatarUrl: publicUrl },
-          });
-        } catch (e) {
-          console.warn("[upload/avatar] failed to persist avatarUrl", e);
-        }
-      }
+// In-memory storage; we write the resized image ourselves
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB
+  fileFilter: (_req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) {
+      return cb(new Error("Only image uploads are allowed"));
     }
-
-    return res.json({ url: publicUrl });
-  } catch (e) {
-    console.error("[upload/avatar]", e);
-    return res.status(500).json({ error: "upload failed" });
-  }
+    cb(null, true);
+  },
 });
 
-export default r;
+async function ensureDir(dir: string) {
+  await fs.mkdir(dir, { recursive: true });
+}
+
+// POST /api/upload/avatar?max=512&persist=1
+// Accepts field "avatar" (preferred) or "file"
+router.post(
+  "/avatar",
+  requireAuth,
+  upload.single("avatar"),
+  async (req: AuthedReq, res) => {
+    try {
+      const userId = req.user?.id;
+      if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+      // also accept "file" field name
+      const incoming =
+        (req as any).file ||
+        ((req as any).files && (req as any).files.file) ||
+        null;
+
+      const file: Express.Multer.File | null = incoming ?? null;
+      if (!file) return res.status(400).json({ error: "No file uploaded" });
+
+      const max = Math.max(
+        1,
+        Math.min(parseInt(String(req.query.max ?? "512"), 10) || 512, 4096)
+      );
+      const persist = String(req.query.persist ?? "1") !== "0";
+
+      const UPLOAD_ROOT =
+        process.env.UPLOAD_DIR || path.resolve(process.cwd(), "uploads");
+      const userDir = path.join(UPLOAD_ROOT, "avatars", userId);
+      await ensureDir(userDir);
+
+      const filename = `avatar-${Date.now()}.png`;
+      const absPath = path.join(userDir, filename);
+
+      await sharp(file.buffer)
+        .rotate()
+        .resize({
+          width: max,
+          height: max,
+          fit: "inside",
+          withoutEnlargement: true,
+        })
+        .png({ quality: 90, compressionLevel: 9 })
+        .toFile(absPath);
+
+      const url = `/uploads/avatars/${userId}/${filename}`; // served statically
+
+      if (persist) {
+        await prisma.user.update({
+          where: { id: userId },
+          data: { avatarUrl: url },
+        });
+      }
+
+      return res.status(201).json({ url });
+    } catch (err: any) {
+      console.error("[upload/avatar] error:", err);
+      return res.status(500).json({ error: "Upload failed" });
+    }
+  }
+);
+
+export default router;

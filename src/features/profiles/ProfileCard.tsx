@@ -3,8 +3,16 @@ import React from "react";
 import HobbyBadge from "./HobbyBadge";
 import type { Profile } from "./types";
 
+function resolveAvatarUrl(u?: string | null): string {
+  if (!u) return "";
+  if (u.startsWith("data:image")) return u;
+  if (/^https?:\/\//i.test(u)) return u;
+  if (u.startsWith("/")) return `/api${u}`;
+  return `/api/${u}`;
+}
+
 export default function ProfileCard({ profile }: { profile: Profile }) {
-  const img = profile.avatarUrl || profile.figurineUrl || "";
+  const img = resolveAvatarUrl(profile.avatarUrl || profile.figurineUrl || "");
   return (
     <article className="grid grid-cols-[72px,1fr] gap-4 rounded-xl border-4 border-black bg-white p-4 shadow">
       <div className="flex items-start">
