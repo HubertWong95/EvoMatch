@@ -1,54 +1,90 @@
-# React + TypeScript + Vite
+# EvoMatch
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> A playful matchmaking app with quiz-based pairing, real-time chat, and AI-generated pixel avatars.
 
-Currently, two official plugins are available:
+EvoMatch pairs people through a short Q&A round; if both participants score high enough, they match and can chat instantly. New users can snap a webcam photo during signup and get a **cartoon/pixel avatar** generated via OpenAI Images.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+<p align="center">
+  <img alt="EvoMatch preview" src="docs/screenshot.png" width="700">
+</p>
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Table of Contents
 
-```js
-export default tseslint.config({
-  extends: [
-    // Remove ...tseslint.configs.recommended and replace with this
-    ...tseslint.configs.recommendedTypeChecked,
-    // Alternatively, use this for stricter rules
-    ...tseslint.configs.strictTypeChecked,
-    // Optionally, add this for stylistic rules
-    ...tseslint.configs.stylisticTypeChecked,
-  ],
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
-```
+- [Features](#features)
+- [Tech Stack](#tech-stack)
+- [Architecture](#architecture)
+- [Getting Started](#getting-started)
+  - [Backend Setup](#backend-setup)
+  - [Frontend Setup](#frontend-setup)
+- [Environment Variables](#environment-variables)
+- [Running the App](#running-the-app)
+- [Key Endpoints](#key-endpoints)
+- [Socket Events](#socket-events)
+- [Project Structure](#project-structure)
+- [Development Notes](#development-notes)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+---
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Features
 
-export default tseslint.config({
-  plugins: {
-    // Add the react-x and react-dom plugins
-    'react-x': reactX,
-    'react-dom': reactDom,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended typescript rules
-    ...reactX.configs['recommended-typescript'].rules,
-    ...reactDom.configs.recommended.rules,
-  },
-})
-```
+- **Discover & Match**
+
+  - Enter a queue, answer 10 lightweight questions.
+  - If both users score ≥ **6**, a match is created automatically.
+
+- **Live Messaging**
+
+  - Real-time chat over Socket.IO.
+  - Optimistic sending + client-side de-duplication (no double messages).
+
+- **AI Avatars**
+
+  - Capture a webcam photo during registration.
+  - Image is transformed into a **pixel/cartoon avatar** via OpenAI (`gpt-image-1`).
+  - Avatar is uploaded and **persisted to the user** for future sessions.
+
+- **Profiles**
+  - Edit display name, bio, location, and hobbies.
+  - Live-styled card preview in a retro “game UI” look.
+
+---
+
+## Tech Stack
+
+**Frontend**
+
+- React (TypeScript) + Vite
+- Tailwind CSS (pixel/retro UI)
+- Socket.IO Client
+- Webcam capture component
+- Lightweight auth & state hooks
+
+**Backend**
+
+- Node.js + Express
+- Socket.IO (server)
+- Prisma ORM (PostgreSQL or SQLite)
+- JWT authentication
+- Multer + Sharp (image upload/resize) with static hosting under `/uploads`
+
+**AI / Media**
+
+- OpenAI Images (`gpt-image-1`) for avatar generation
+- Client-side downscaling before calling OpenAI to avoid large payloads
+
+---
+
+## Architecture
+
+- **Quiz flow** (Socket): `session:ready → session:question → session:answer → session:complete`
+- **Match** (DB): Created/upserted when both users pass (score ≥ 6)
+- **Messaging** (Socket): `chat:send` saves message → server emits `chat:message` and `message:new` to both users
+- **Avatars**:
+  - Frontend captures photo, calls OpenAI to cartoonize, then uploads result.
+  - Backend writes `avatarUrl` to the user; `/api/me` always includes `avatarUrl`.
+
+---
