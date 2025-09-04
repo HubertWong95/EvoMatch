@@ -8,6 +8,29 @@ import { api } from "@/lib/apiClient";
 
 function normalizeProfile(src: any): Profile {
   const base = src?.user ?? src?.me ?? src ?? {};
+  // Accept various possible server keys
+  const avatarCandidate =
+    base.avatarUrl ??
+    base.avatar_url ??
+    base.photoUrl ??
+    base.photo_url ??
+    base.avatar ??
+    base.profile?.avatarUrl ??
+    undefined;
+  const figurineCandidate =
+    base.figurineUrl ??
+    base.figurine_url ??
+    base.pixelUrl ??
+    base.pixel_url ??
+    base.profile?.figurineUrl ??
+    undefined;
+
+  // As a final fallback (e.g., just after register) read cached avatar
+  const fallbackLocal =
+    typeof window !== "undefined"
+      ? localStorage.getItem("avatarUrl") || undefined
+      : undefined;
+
   return {
     id: String(base.id ?? ""),
     username: String(base.username ?? ""),
@@ -16,18 +39,8 @@ function normalizeProfile(src: any): Profile {
     bio: base.bio ?? "",
     location: base.location ?? "",
     hobbies: Array.isArray(base.hobbies) ? base.hobbies : [],
-    avatarUrl:
-      base.avatarUrl ??
-      base.avatar_url ??
-      base.photoUrl ??
-      base.photo_url ??
-      undefined,
-    figurineUrl:
-      base.figurineUrl ??
-      base.figurine_url ??
-      base.pixelUrl ??
-      base.pixel_url ??
-      undefined,
+    avatarUrl: avatarCandidate || fallbackLocal,
+    figurineUrl: figurineCandidate,
   };
 }
 
@@ -38,13 +51,13 @@ export default function ProfilePage() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // master list from server in future; keep a simple local list for now
+  // Fallback list; replace with server-provided master list when available
   const allHobbies = useMemo(
     () => ["Gaming", "Cooking", "Music", "Hiking", "Art", "Reading", "Tech"],
     []
   );
 
-  // Load from /me (fallback to auth user if needed)
+  // Load latest profile from server; fallback to Auth (and localStorage avatar)
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -54,16 +67,7 @@ export default function ProfilePage() {
         setProfile(normalizeProfile(res));
       } catch {
         if (!alive) return;
-        // Fallback to auth user if /me is not available yet
-        if (user) {
-          setProfile(
-            normalizeProfile({
-              user: {
-                ...user,
-              },
-            })
-          );
-        }
+        if (user) setProfile(normalizeProfile({ user }));
       }
     })();
     return () => {
@@ -71,32 +75,7 @@ export default function ProfilePage() {
     };
   }, [user?.id]);
 
-  // When profile saves, also refresh AuthContext so navbar etc. see avatar
-  const refreshAuthFromProfile = (p: Profile) => {
-    setUser((prev) =>
-      prev
-        ? {
-            ...prev,
-            name: p.name,
-            bio: p.bio,
-            location: p.location,
-            hobbies: p.hobbies,
-            avatarUrl: p.avatarUrl,
-            figurineUrl: p.figurineUrl,
-          }
-        : prev
-    );
-  };
-
-  if (!profile) {
-    return (
-      <div className="rounded-xl border-4 border-black bg-white p-6 font-pixel shadow">
-        Loading profile…
-      </div>
-    );
-  }
-
-  const displayAvatar = profile.avatarUrl || profile.figurineUrl || "";
+  const displayAvatar = profile?.avatarUrl || profile?.figurineUrl || "";
 
   const toggleHobby = (h: string) => {
     setProfile((prev) =>
@@ -117,7 +96,6 @@ export default function ProfilePage() {
     setSaved(false);
     setError(null);
     try {
-      // PATCH /me with normalized fields
       await api("/me", {
         method: "PATCH",
         body: JSON.stringify({
@@ -125,20 +103,46 @@ export default function ProfilePage() {
           bio: profile.bio || undefined,
           location: profile.location || undefined,
           hobbies: profile.hobbies ?? [],
-          // carry avatar fields if present
           avatarUrl: profile.avatarUrl ?? undefined,
           figurineUrl: profile.figurineUrl ?? undefined,
         }),
       });
+
+      // reflect in Auth (navbar etc.)
+      setUser((prev) =>
+        prev
+          ? {
+              ...prev,
+              name: profile.name,
+              bio: profile.bio,
+              location: profile.location,
+              hobbies: profile.hobbies,
+              avatarUrl: profile.avatarUrl ?? prev.avatarUrl,
+              figurineUrl: profile.figurineUrl ?? prev.figurineUrl,
+            }
+          : prev
+      );
+
+      // update cache for future fallbacks
+      if (profile.avatarUrl)
+        localStorage.setItem("avatarUrl", profile.avatarUrl);
+
       setSaved(true);
-      refreshAuthFromProfile(profile);
+      setTimeout(() => setSaved(false), 1500);
     } catch (e: any) {
       setError(e?.message || "Failed to save profile.");
     } finally {
       setSaving(false);
-      setTimeout(() => setSaved(false), 2000);
     }
   };
+
+  if (!profile) {
+    return (
+      <div className="rounded-xl border-4 border-black bg-white p-6 font-pixel shadow">
+        Loading profile…
+      </div>
+    );
+  }
 
   return (
     <div className="grid gap-6">
@@ -238,7 +242,7 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      {/* Preview card uses the same normalized avatar */}
+      {/* Preview uses the same normalized avatar */}
       <section>
         <h2 className="mb-3 font-pixel text-xl">Preview</h2>
         <ProfileCard

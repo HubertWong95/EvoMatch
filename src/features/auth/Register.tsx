@@ -1,6 +1,6 @@
 // src/features/auth/Register.tsx
 import React, { useState } from "react";
-import WebcamCapture from "@/features/webcam/WebcamCapture"; // ← correct path
+import WebcamCapture from "@/features/webcam/WebcamCapture";
 import { generatePixelAvatar } from "@/utils/generatePixelAvatar";
 import { useAuth } from "@/features/auth/useAuth";
 import { useNavigate } from "react-router-dom";
@@ -19,7 +19,7 @@ function dataUrlToFile(dataUrl: string, filename = "avatar.png"): File {
 
 export default function Register() {
   const navigate = useNavigate();
-  const { loginWithToken } = useAuth();
+  const { loginWithToken, setUser } = useAuth();
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -38,45 +38,39 @@ export default function Register() {
     setError(null);
 
     try {
-      // 1) Create account (NO big image in JSON — avoids 413)
+      // 1) Create account
       const res = await api<{ token: string }>("/register", {
         method: "POST",
         body: JSON.stringify({ username, password, name }),
       });
       if (!res?.token) throw new Error("Registration failed");
-
       localStorage.setItem("token", res.token);
       await loginWithToken(res.token);
 
-      // 2) If we have a cartoonized preview, upload it & save avatarUrl
+      // 2) Upload cartoon avatar and persist to DB in one step
       if (avatarPreview) {
-        if (avatarPreview.startsWith("data:")) {
-          const file = dataUrlToFile(avatarPreview, "avatar_cartoon.png");
+        const file = avatarPreview.startsWith("data:")
+          ? dataUrlToFile(avatarPreview, "avatar_cartoon.png")
+          : null;
+
+        if (file) {
           const fd = new FormData();
           fd.append("avatar", file);
-
-          const up = await fetch("/api/upload/avatar?style=raw", {
+          const up = await fetch("/api/upload/avatar?persist=1&max=512", {
             method: "POST",
             headers: { Authorization: `Bearer ${res.token}` },
             body: fd,
           });
-
           if (up.ok) {
             const j = await up.json();
-            const url = j?.url;
-            if (url) {
-              await api("/me", {
-                method: "PATCH",
-                body: JSON.stringify({ avatarUrl: url }),
-              }).catch(() => {});
+            const finalUrl = j?.url as string | undefined;
+            if (finalUrl) {
+              // reflect immediately in UI; /me already returns avatarUrl
+              setUser((prev) =>
+                prev ? { ...prev, avatarUrl: finalUrl } : prev
+              );
             }
           }
-        } else {
-          // If generatePixelAvatar ever returns a hosted URL directly
-          await api("/me", {
-            method: "PATCH",
-            body: JSON.stringify({ avatarUrl: avatarPreview }),
-          }).catch(() => {});
         }
       }
 
@@ -90,7 +84,7 @@ export default function Register() {
   }
 
   return (
-    <div className="mx-auto max-w-md space-y-4 rounded-xl border-4 border-black bg-white p-4">
+    <div className="relative mx-auto max-w-md space-y-4 rounded-xl border-4 border-black bg-white p-4">
       <h1 className="font-pixel text-2xl">Create Account</h1>
 
       {error && (
@@ -167,19 +161,18 @@ export default function Register() {
         </button>
       </form>
 
-      {/* Webcam Modal */}
+      {/* Webcam Modal — close immediately on capture */}
       {showCamera && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="rounded-xl border-4 border-black bg-white p-4 shadow">
             <WebcamCapture
               onCapture={async (imageDataUrl) => {
-                setIsGenerating(true);
+                setShowCamera(false); // close instantly
+                setIsGenerating(true); // show overlay while generating
                 setError(null);
                 try {
-                  // ✨ SEND TO OPENAI HERE (client → OpenAI)
                   const pixel = await generatePixelAvatar(imageDataUrl);
                   setAvatarPreview(pixel);
-                  setShowCamera(false);
                 } catch (err: any) {
                   setError(
                     err?.message || "Failed to generate avatar. Try again."
@@ -192,11 +185,21 @@ export default function Register() {
             <div className="mt-2 text-center">
               <button
                 onClick={() => setShowCamera(false)}
-                className="font-pixel text-sm text-game-blue underline"
+                className="font-pixel text-sm underline"
               >
                 Cancel
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Generating overlay */}
+      {isGenerating && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl bg-white/80">
+          <div className="flex items-center gap-3 rounded-md border-4 border-black bg-white px-4 py-3 font-pixel shadow">
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-black border-r-transparent" />
+            Generating avatar…
           </div>
         </div>
       )}

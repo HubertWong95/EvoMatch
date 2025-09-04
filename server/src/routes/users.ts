@@ -1,58 +1,76 @@
-// src/routes/users.ts
-import { Router } from "express";
+// server/src/routes/users.ts
+import { Router, Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
 import { prisma } from "../prisma";
-import { authMiddleware } from "../auth";
+
+const JWT_SECRET = process.env.JWT_SECRET || "replace-me";
+
+interface AuthedRequest extends Request {
+  userId?: string;
+}
+
+function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  const hdr = req.headers.authorization || "";
+  const m = hdr.match(/^Bearer\s+(.+)$/i);
+  if (!m) return res.status(401).json({ error: "Unauthorized" });
+  const token = m[1];
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as any;
+    const uid = payload?.sub || payload?.id || payload?.userId;
+    if (!uid) return res.status(401).json({ error: "Unauthorized" });
+    req.userId = String(uid);
+    next();
+  } catch {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+}
 
 const r = Router();
 
-r.get("/me", authMiddleware, async (req, res) => {
-  const userId = (req as any).userId as string;
-
-  const me = await prisma.user.findUnique({
-    where: { id: userId },
-    include: { hobbies: { include: { hobby: true } } },
+/** GET /api/me */
+r.get("/me", requireAuth, async (req: AuthedRequest, res: Response) => {
+  const id = req.userId!;
+  const u = await prisma.user.findUnique({ where: { id } });
+  if (!u) return res.status(404).json({ error: "Not found" });
+  res.json({
+    id: u.id,
+    username: u.username,
+    name: u.name,
+    age: (u as any).age ?? undefined,
+    bio: (u as any).bio ?? undefined,
+    location: (u as any).location ?? undefined,
+    hobbies: (u as any).hobbies ?? [],
+    avatarUrl: (u as any).avatarUrl ?? (u as any).photoUrl ?? null,
+    figurineUrl: (u as any).figurineUrl ?? (u as any).pixelUrl ?? null,
   });
+});
 
-  if (!me) return res.status(404).json({ error: "User not found" });
+/** PATCH /api/me */
+r.patch("/me", requireAuth, async (req: AuthedRequest, res: Response) => {
+  const id = req.userId!;
+  const { name, bio, location, hobbies, avatarUrl, figurineUrl } =
+    req.body ?? {};
+  const data: any = {};
+  if (typeof name === "string") data.name = name;
+  if (typeof bio === "string") data.bio = bio;
+  if (typeof location === "string") data.location = location;
+  if (Array.isArray(hobbies)) data.hobbies = hobbies;
+  if (typeof avatarUrl === "string") data.avatarUrl = avatarUrl;
+  if (typeof figurineUrl === "string") data.figurineUrl = figurineUrl;
+
+  const u = await prisma.user.update({ where: { id }, data });
 
   res.json({
-    user: {
-      ...me,
-      hobbies: me.hobbies.map((uh) => uh.hobby.name),
-    },
+    id: u.id,
+    username: u.username,
+    name: u.name,
+    age: (u as any).age ?? undefined,
+    bio: (u as any).bio ?? undefined,
+    location: (u as any).location ?? undefined,
+    hobbies: (u as any).hobbies ?? [],
+    avatarUrl: (u as any).avatarUrl ?? (u as any).photoUrl ?? null,
+    figurineUrl: (u as any).figurineUrl ?? (u as any).pixelUrl ?? null,
   });
-});
-
-r.patch("/me", authMiddleware, async (req, res) => {
-  const userId = (req as any).userId as string;
-  const { name, bio, age, location, avatarUrl, figurineUrl, hobbies } =
-    req.body || {};
-
-  const updated = await prisma.user.update({
-    where: { id: userId },
-    data: { name, bio, age, location, avatarUrl, figurineUrl },
-  });
-
-  if (Array.isArray(hobbies)) {
-    // upsert hobby names
-    const hobbyRecords = await Promise.all(
-      hobbies.map(async (name: string) =>
-        prisma.hobby.upsert({ where: { name }, update: {}, create: { name } })
-      )
-    );
-    // reset junctions
-    await prisma.userHobby.deleteMany({ where: { userId } });
-    await prisma.userHobby.createMany({
-      data: hobbyRecords.map((h) => ({ userId, hobbyId: h.id })),
-    });
-  }
-
-  res.json({ user: updated });
-});
-
-r.get("/hobbies", async (_req, res) => {
-  const list = await prisma.hobby.findMany({ orderBy: { name: "asc" } });
-  res.json({ hobbies: list.map((h) => h.name) });
 });
 
 export default r;

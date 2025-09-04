@@ -23,19 +23,14 @@ export type AuthUser = {
 type AuthContextValue = {
   user: AuthUser | null;
   setUser: React.Dispatch<React.SetStateAction<AuthUser | null>>;
-  /** Sign in (legacy helper; prefer the dedicated Login page) */
   login: (username: string, password: string) => Promise<void>;
-  /** Register (legacy helper) */
   register: (
     username: string,
     password: string,
     name?: string
   ) => Promise<void>;
-  /** Store a token you already have, then hydrate user from /me */
   loginWithToken: (token: string) => Promise<void>;
-  /** Clear auth */
   logout: () => void;
-  /** True while we’re fetching /me on initial load or after loginWithToken */
   isLoading: boolean;
 };
 
@@ -44,7 +39,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 function extractUser(obj: any): AuthUser {
   if (!obj) return {} as any;
   const src = obj.user ?? obj.me ?? obj;
-  return {
+  const u: AuthUser = {
     id: String(src.id),
     username: String(src.username ?? ""),
     name: src.name ?? undefined,
@@ -52,27 +47,37 @@ function extractUser(obj: any): AuthUser {
     bio: src.bio ?? undefined,
     location: src.location ?? undefined,
     hobbies: Array.isArray(src.hobbies) ? src.hobbies : undefined,
-    // Normalize possible server keys:
     avatarUrl:
       src.avatarUrl ??
       src.avatar_url ??
       src.photoUrl ??
       src.photo_url ??
+      src.avatar ??
+      src.profile?.avatarUrl ??
       undefined,
     figurineUrl:
       src.figurineUrl ??
       src.figurine_url ??
       src.pixelUrl ??
       src.pixel_url ??
+      src.profile?.figurineUrl ??
       undefined,
   };
+
+  // Fallback to locally cached avatar if server payload lacks it
+  if (!u.avatarUrl && !u.figurineUrl) {
+    const localAvatar = localStorage.getItem("avatarUrl");
+    if (localAvatar) u.avatarUrl = localAvatar;
+  }
+
+  return u;
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Initial boot: if token exists, hydrate from /me
+  // Initial boot
   useEffect(() => {
     (async () => {
       const token = localStorage.getItem("token");
@@ -85,8 +90,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const me = extractUser(res);
         setUser(me);
       } catch {
-        localStorage.removeItem("token");
-        setUser(null);
+        // still allow fallback avatar if present
+        const name = localStorage.getItem("username") || "";
+        const avatarUrl = localStorage.getItem("avatarUrl") || undefined;
+        if (name || avatarUrl) {
+          setUser({
+            id: "me",
+            username: name,
+            avatarUrl,
+          });
+        } else {
+          localStorage.removeItem("token");
+          setUser(null);
+        }
       } finally {
         setIsLoading(false);
       }
@@ -102,9 +118,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       if (res?.token) {
         localStorage.setItem("token", res.token);
+        localStorage.setItem("username", username);
         const me = extractUser(res);
         if (!me.id) {
-          // If /login didn’t include full profile, fetch /me
           const fresh = await api<any>("/me");
           setUser(extractUser(fresh));
         } else {
@@ -131,6 +147,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
       if (res?.token) {
         localStorage.setItem("token", res.token);
+        localStorage.setItem("username", username);
         const fresh = await api<any>("/me");
         setUser(extractUser(fresh));
       } else {
